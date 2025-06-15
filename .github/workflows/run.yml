@@ -1,0 +1,96 @@
+name: Run Decoder
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  run-decoder:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Cache Docker layers
+        uses: actions/cache@v3
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          load: true
+          tags: decoder-image:latest
+          cache-from: |
+            type=local,src=/tmp/.buildx-cache
+          cache-to: |
+            type=local,dest=/tmp/.buildx-cache-new,mode=max
+
+      - name: Move cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
+      - name: Create output directories
+        run: |
+          mkdir -p ${{ github.workspace }}/plots/cluster
+          mkdir -p ${{ github.workspace }}/results
+          chmod -R 777 ${{ github.workspace }}/plots
+          chmod -R 777 ${{ github.workspace }}/results
+
+      - name: Run decoder in Docker container
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/app \
+            -e PYTHONUNBUFFERED=1 \
+            decoder-image:latest \
+            bash -c "
+              set -e
+              echo 'Starting decoder run...'
+              python -m subgraph_mining.decoder \
+                --dataset=graph.pkl \
+                --n_trials 1000 \
+                --node_anchored \
+                --out_path=/app/results/patterns.pkl
+              echo 'Checking output directories...'
+              ls -la /app/plots/cluster
+              ls -la /app/results
+              "
+
+      - name: Check for generated files
+        run: |
+          echo "Checking plots directory:"
+          ls -R plots/ || echo "No plots directory found"
+          echo "Checking results directory:"
+          ls -R results/ || echo "No results directory found"
+
+      - name: Upload plots as artifact
+        if: always()  # Run even if previous steps failed
+        uses: actions/upload-artifact@v4
+        with:
+          name: decoder-plots
+          path: |
+            plots/
+            results/
+          retention-days: 7
+          if-no-files-found: warn  # Warn if no files found instead of failing
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: decoder-logs
+          path: |
+            *.log
+            *.err
+          if-no-files-found: ignore
