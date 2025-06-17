@@ -45,6 +45,81 @@ import pickle
 import torch.multiprocessing as mp
 from sklearn.decomposition import PCA
 
+def _extract_and_embed(args_tuple):
+    graph, args, model_state_dict, device, anchors_flag, anchor_val, idx = args_tuple
+    import random
+    import numpy as np
+    import torch
+    import networkx as nx
+    import torch_geometric.utils as pyg_utils
+    from common import utils, models
+
+    # Set seeds for reproducibility
+    random.seed(42 + idx)
+    np.random.seed(42 + idx)
+    torch.manual_seed(42 + idx)
+
+    if not isinstance(graph, nx.Graph):
+        graph = pyg_utils.to_networkx(graph).to_undirected()
+        for node in graph.nodes():
+            if 'label' not in graph.nodes[node]:
+                graph.nodes[node]['label'] = str(node)
+            if 'id' not in graph.nodes[node]:
+                graph.nodes[node]['id'] = str(node)
+
+    neighs = []
+    anchors = []
+    if args.sample_method == "radial":
+        for j, node in enumerate(graph.nodes):
+            if args.use_whole_graphs:
+                neigh = graph.nodes
+            else:
+                neigh = list(nx.single_source_shortest_path_length(graph, node, cutoff=args.radius).keys())
+                if args.subgraph_sample_size != 0:
+                    neigh = random.sample(neigh, min(len(neigh), args.subgraph_sample_size))
+            if len(neigh) > 1:
+                subgraph = graph.subgraph(neigh)
+                if args.subgraph_sample_size != 0:
+                    subgraph = subgraph.subgraph(max(nx.connected_components(subgraph), key=len))
+                orig_attrs = {n: subgraph.nodes[n].copy() for n in subgraph.nodes()}
+                edge_attrs = {(u,v): subgraph.edges[u,v].copy() for u,v in subgraph.edges()}
+                mapping = {old: new for new, old in enumerate(subgraph.nodes())}
+                subgraph = nx.relabel_nodes(subgraph, mapping)
+                for old, new in mapping.items():
+                    subgraph.nodes[new].update(orig_attrs[old])
+                for (old_u, old_v), attrs in edge_attrs.items():
+                    subgraph.edges[mapping[old_u], mapping[old_v]].update(attrs)
+                subgraph.add_edge(0, 0)
+                neighs.append(subgraph)
+                if anchors_flag:
+                    anchors.append(0)
+    else:
+        neighs = [graph]
+        if anchors_flag:
+            anchors = [anchor_val]
+
+    # Model must be re-instantiated in each process
+    if args.method_type == "end2end":
+        model = models.End2EndOrder(1, args.hidden_dim, args)
+    elif args.method_type == "mlp":
+        model = models.BaselineMLP(1, args.hidden_dim, args)
+    else:
+        model = models.OrderEmbedder(1, args.hidden_dim, args)
+    model.load_state_dict(model_state_dict)
+    model.to(device)
+    model.eval()
+
+    embs = []
+    for i in range(0, len(neighs), args.batch_size):
+        top = min(i + args.batch_size, len(neighs))
+        with torch.no_grad():
+            batch = utils.batch_nx_graphs(neighs[i:top], anchors=anchors if anchors_flag else None)
+            emb = model.emb_model(batch)
+            emb = emb.to(torch.device("cpu"))
+        embs.append(emb)
+    return neighs, embs, anchors
+
+
 def process_large_graph_in_chunks(graph, chunk_size=10000):
     graph_chunks = []
     
@@ -125,81 +200,42 @@ def pattern_growth(dataset, task, args):
         model = models.OrderEmbedder(1, args.hidden_dim, args)
     model.to(utils.get_device())
     model.eval()
-    model.load_state_dict(torch.load(args.model_path,
-        map_location=utils.get_device()))
+    model.load_state_dict(torch.load(args.model_path, map_location=utils.get_device()))
+    model_state_dict = model.state_dict()
 
     if task == "graph-labeled":
         dataset, labels = dataset
 
-    neighs_pyg, neighs = [], []
     print(len(dataset), "graphs")
     print("search strategy:", args.search_strategy)
-    if task == "graph-labeled": print("using label 0")
+    if task == "graph-labeled":
+        print("using label 0")
     graphs = []
     for i, graph in enumerate(dataset):
-        if task == "graph-labeled" and labels[i] != 0: continue
-        if task == "graph-truncate" and i >= 1000: break
-        if not type(graph) == nx.Graph:
-            graph = pyg_utils.to_networkx(graph).to_undirected()
-            for node in graph.nodes():
-                if 'label' not in graph.nodes[node]:
-                    graph.nodes[node]['label'] = str(node)
-                if 'id' not in graph.nodes[node]:
-                    graph.nodes[node]['id'] = str(node)
+        if task == "graph-labeled" and labels[i] != 0:
+            continue
+        if task == "graph-truncate" and i >= 1000:
+            break
         graphs.append(graph)
-    
-    if args.use_whole_graphs:
-        neighs = graphs
-    else:
-        anchors = []
-        if args.sample_method == "radial":
-            for i, graph in enumerate(graphs):
-                print(i)
-                for j, node in enumerate(graph.nodes):
-                    if len(dataset) <= 10 and j % 100 == 0: print(i, j)
-                    if args.use_whole_graphs:
-                        neigh = graph.nodes
-                    else:
-                        neigh = list(nx.single_source_shortest_path_length(graph,
-                            node, cutoff=args.radius).keys())
-                        if args.subgraph_sample_size != 0:
-                            neigh = random.sample(neigh, min(len(neigh),
-                                args.subgraph_sample_size))
-                    if len(neigh) > 1:
-                        subgraph = graph.subgraph(neigh)
-                        if args.subgraph_sample_size != 0:
-                            subgraph = subgraph.subgraph(max(
-                                nx.connected_components(subgraph), key=len))
-                        
-                        orig_attrs = {n: subgraph.nodes[n].copy() for n in subgraph.nodes()}
-                        edge_attrs = {(u,v): subgraph.edges[u,v].copy() 
-                                    for u,v in subgraph.edges()}
-                        
-                        mapping = {old: new for new, old in enumerate(subgraph.nodes())}
-                        subgraph = nx.relabel_nodes(subgraph, mapping)
-                        
-                        for old, new in mapping.items():
-                            subgraph.nodes[new].update(orig_attrs[old])
-                        
-                        for (old_u, old_v), attrs in edge_attrs.items():
-                            subgraph.edges[mapping[old_u], mapping[old_v]].update(attrs)
-                        
-                        subgraph.add_edge(0, 0)
-                        neighs.append(subgraph)
-                        if args.node_anchored:
-                            anchors.append(0)
 
+    # Multiprocessing for subgraph extraction and embedding
+    mp.set_start_method('spawn', force=True)
+    pool = mp.Pool(processes=4)
+    jobs = []
+    for idx, graph in enumerate(graphs):
+        jobs.append((graph, args, model_state_dict, utils.get_device(), args.node_anchored, 0, idx))
+    results = pool.map(_extract_and_embed, jobs)
+    pool.close()
+    pool.join()
+
+    # Collect results
+    neighs = []
     embs = []
-    if len(neighs) % args.batch_size != 0:
-        print("WARNING: number of graphs not multiple of batch size")
-    for i in range(len(neighs) // args.batch_size):
-        top = (i+1)*args.batch_size
-        with torch.no_grad():
-            batch = utils.batch_nx_graphs(neighs[i*args.batch_size:top],
-                anchors=anchors if args.node_anchored else None)
-            emb = model.emb_model(batch)
-            emb = emb.to(torch.device("cpu"))
-        embs.append(emb)
+    anchors = []
+    for n, e, a in results:
+        neighs.extend(n)
+        embs.extend(e)
+        anchors.extend(a)
 
     if args.analyze:
         embs_np = torch.stack(embs).numpy()
@@ -239,88 +275,62 @@ def pattern_growth(dataset, task, args):
 
     count_by_size = defaultdict(int)
     for pattern in out_graphs:
-            try:
-                plt.figure(figsize=(15, 10))  
-        
-                node_labels = {}
-                for n in pattern.nodes():
-                    node_id = pattern.nodes[n].get('id', str(n))
-                    node_label = pattern.nodes[n].get('label', 'unknown')
-                    node_labels[n] = f"{node_id}:\n{node_label}"
-        
-                pos = nx.spring_layout(pattern, k=2.0, seed=42, iterations=50)
-        
-                unique_labels = sorted(set(pattern.nodes[n].get('label', 'unknown') for n in pattern.nodes()))
-                label_color_map = {label: plt.cm.Set3(i) for i, label in enumerate(unique_labels)}
-        
-                colors = []
-                node_sizes = []
-                node_shapes = []
-                for i, node in enumerate(pattern.nodes()):
-                    node_label = pattern.nodes[node].get('label', 'unknown')
-                    
-                    if args.node_anchored and i == 0:
-                        colors.append('red')
-                        node_sizes.append(5000)
-                        node_shapes.append('s')  
-                    else:
-                        colors.append(label_color_map[node_label])
-                        node_sizes.append(3000)
-                        node_shapes.append('o')  
-        
-                for shape in set(node_shapes):
-                    shape_indices = [i for i, s in enumerate(node_shapes) if s == shape]
-                    nx.draw_networkx_nodes(pattern, pos, 
-                                    nodelist=[list(pattern.nodes())[i] for i in shape_indices],
-                                    node_color=[colors[i] for i in shape_indices], 
-                                    node_size=[node_sizes[i] for i in shape_indices], 
-                                    node_shape=shape,
-                                    edgecolors='black', 
-                                    linewidths=1.5)
-        
-                nx.draw_networkx_edges(pattern, pos, 
-                                width=2,  
-                                edge_color='gray',  
-                                alpha=0.7)  
-        
-                nx.draw_networkx_labels(pattern, pos, 
-                                 labels=node_labels, 
-                                 font_size=9, 
-                                 font_weight='bold',
-                                 font_color='black',
-                                 bbox=dict(facecolor='white', edgecolor='none', alpha=0.7))
-        
-                edge_labels = {(u,v): data.get('type', '') 
-                        for u,v,data in pattern.edges(data=True)}
-                nx.draw_networkx_edge_labels(pattern, pos, 
-                                      edge_labels=edge_labels, 
-                                      font_size=8, 
-                                      font_color='darkred',  
-                                      bbox=dict(facecolor='white', edgecolor='none', alpha=0.7))
-        
-                plt.title(f"Pattern Graph (Size: {len(pattern)} nodes)")
-                plt.axis('off')  
-        
-                pattern_info = [f"{len(pattern)}-{count_by_size[len(pattern)]}"]
-        
-                node_types = sorted(set(pattern.nodes[n].get('label', '') for n in pattern.nodes()))
-                if any(node_types):
-                    pattern_info.append('nodes-' + '-'.join(node_types))
-            
-                edge_types = sorted(set(pattern.edges[e].get('type', '') for e in pattern.edges()))
-                if any(edge_types):
-                    pattern_info.append('edges-' + '-'.join(edge_types))
-        
-                filename = '_'.join(pattern_info)
-                plt.tight_layout()
-                plt.savefig(f"plots/cluster/{filename}.png", bbox_inches='tight', dpi=300)
-                plt.savefig(f"plots/cluster/{filename}.pdf", bbox_inches='tight')
-                plt.close()
-                count_by_size[len(pattern)] += 1
-        
-            except Exception as e:
-                print(f"Error visualizing pattern graph: {e}")
-                continue
+        try:
+            plt.figure(figsize=(15, 10))  
+            node_labels = {}
+            for n in pattern.nodes():
+                node_id = pattern.nodes[n].get('id', str(n))
+                node_label = pattern.nodes[n].get('label', 'unknown')
+                node_labels[n] = f"{node_id}:\n{node_label}"
+            pos = nx.spring_layout(pattern, k=2.0, seed=42, iterations=50)
+            unique_labels = sorted(set(pattern.nodes[n].get('label', 'unknown') for n in pattern.nodes()))
+            label_color_map = {label: plt.cm.Set3(i) for i, label in enumerate(unique_labels)}
+            colors = []
+            node_sizes = []
+            node_shapes = []
+            for i, node in enumerate(pattern.nodes()):
+                node_label = pattern.nodes[node].get('label', 'unknown')
+                if args.node_anchored and i == 0:
+                    colors.append('red')
+                    node_sizes.append(5000)
+                    node_shapes.append('s')  
+                else:
+                    colors.append(label_color_map[node_label])
+                    node_sizes.append(3000)
+                    node_shapes.append('o')  
+            for shape in set(node_shapes):
+                shape_indices = [i for i, s in enumerate(node_shapes) if s == shape]
+                nx.draw_networkx_nodes(pattern, pos, 
+                                nodelist=[list(pattern.nodes())[i] for i in shape_indices],
+                                node_color=[colors[i] for i in shape_indices], 
+                                node_size=[node_sizes[i] for i in shape_indices], 
+                                node_shape=shape,
+                                edgecolors='black', 
+                                linewidths=1.5)
+            nx.draw_networkx_edges(pattern, pos, width=2, edge_color='gray', alpha=0.7)  
+            nx.draw_networkx_labels(pattern, pos, labels=node_labels, font_size=9, font_weight='bold',
+                                   font_color='black', bbox=dict(facecolor='white', edgecolor='none', alpha=0.7))
+            edge_labels = {(u,v): data.get('type', '') for u,v,data in pattern.edges(data=True)}
+            nx.draw_networkx_edge_labels(pattern, pos, edge_labels=edge_labels, font_size=8, font_color='darkred',  
+                                        bbox=dict(facecolor='white', edgecolor='none', alpha=0.7))
+            plt.title(f"Pattern Graph (Size: {len(pattern)} nodes)")
+            plt.axis('off')  
+            pattern_info = [f"{len(pattern)}-{count_by_size[len(pattern)]}"]
+            node_types = sorted(set(pattern.nodes[n].get('label', '') for n in pattern.nodes()))
+            if any(node_types):
+                pattern_info.append('nodes-' + '-'.join(node_types))
+            edge_types = sorted(set(pattern.edges[e].get('type', '') for e in pattern.edges()))
+            if any(edge_types):
+                pattern_info.append('edges-' + '-'.join(edge_types))
+            filename = '_'.join(pattern_info)
+            plt.tight_layout()
+            plt.savefig(f"plots/cluster/{filename}.png", bbox_inches='tight', dpi=300)
+            plt.savefig(f"plots/cluster/{filename}.pdf", bbox_inches='tight')
+            plt.close()
+            count_by_size[len(pattern)] += 1
+        except Exception as e:
+            print(f"Error visualizing pattern graph: {e}")
+            continue
 
     if not os.path.exists("results"):
         os.makedirs("results")
