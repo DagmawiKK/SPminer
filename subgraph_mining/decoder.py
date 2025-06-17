@@ -88,7 +88,11 @@ def _extract_and_embed(args_tuple):
                 for old, new in mapping.items():
                     subgraph.nodes[new].update(orig_attrs[old])
                 for (old_u, old_v), attrs in edge_attrs.items():
-                    subgraph.edges[mapping[old_u], mapping[old_v]].update(attrs)
+                    for k, v in attrs.items():
+                        if isinstance(k, str):
+                            subgraph.edges[mapping[old_u], mapping[old_v]][k] = v
+                        else:
+                            print(f"Warning: Skipping invalid edge attribute key {k} of type {type(k)}")
                 subgraph.add_edge(0, 0)
                 neighs.append(subgraph)
                 if anchors_flag:
