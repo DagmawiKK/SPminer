@@ -188,8 +188,18 @@ def pattern_growth(dataset, task, args):
                         neighs.append(subgraph)
                         if args.node_anchored:
                             anchors.append(0)
-        else:
-            raise ValueError("Unknown sampling method: {}".format(args.sample_method))
+        elif args.sample_method == "tree":
+            start_time = time.time()
+            for j in tqdm(range(args.n_neighborhoods)):
+                graph, neigh = utils.sample_neigh(graphs,
+                    random.randint(args.min_neighborhood_size,
+                        args.max_neighborhood_size))
+                neigh = graph.subgraph(neigh)
+                neigh = nx.convert_node_labels_to_integers(neigh)
+                neigh.add_edge(0, 0)
+                neighs.append(neigh)
+                if args.node_anchored:
+                    anchors.append(0)
 
     embs = []
     if len(neighs) % args.batch_size != 0:
