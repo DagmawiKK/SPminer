@@ -182,15 +182,14 @@ def pattern_growth(dataset, task, args):
                             subgraph.nodes[new].update(orig_attrs[old])
                         
                         for (old_u, old_v), attrs in edge_attrs.items():
-                            valid_attrs = {k: v for k, v in attrs.items() if isinstance(k, str)}
-                            if len(valid_attrs) < len(attrs):
-                                print(f"Warning: Skipping invalid edge attribute keys in edge ({old_u}, {old_v}): {set(attrs.keys()) - set(valid_attrs.keys())}")
-                            subgraph.edges[mapping[old_u], mapping[old_v]].update(valid_attrs)
+                            subgraph.edges[mapping[old_u], mapping[old_v]].update(attrs)
                         
                         subgraph.add_edge(0, 0)
                         neighs.append(subgraph)
                         if args.node_anchored:
                             anchors.append(0)
+        else:
+            raise ValueError("Unknown sampling method: {}".format(args.sample_method))
 
     embs = []
     if len(neighs) % args.batch_size != 0:
