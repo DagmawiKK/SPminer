@@ -311,7 +311,6 @@ class GreedySearchAgent(SearchAgent):
             new_beams = []
             for _, neigh, frontier, visited, graph_idx in beam_set:
                 graph = self.dataset[graph_idx]
-                print("neigh:" + neigh)
                 if len(neigh) >= self.max_pattern_size or not frontier: continue
                 cand_neighs, anchors = [], []
                 for cand_node in frontier:
