@@ -315,8 +315,13 @@ class GreedySearchAgent(SearchAgent):
                 if len(neigh) >= self.max_pattern_size or not frontier: continue
                 cand_neighs, anchors = [], []
                 for cand_node in frontier:
-                    cand_neigh = graph.subgraph(neigh + [cand_node])
-                    print("hi from step")
+                    cand_neigh = graph.subgraph(neigh + [cand_node]).copy()
+                    # Log edge attributes
+                    print(f"Cand_neigh for node {cand_node} edges: {list(cand_neigh.edges(data=True))[:5]}")
+                    for u, v in cand_neigh.edges():
+                        edge_data = cand_neigh.edges[u, v]
+                        if 'type' not in edge_data or edge_data['type'] is None or edge_data['type'] == {}:
+                            edge_data['type'] = 'default'
                     cand_neighs.append(cand_neigh)
                     if self.node_anchored:
                         anchors.append(neigh[0])
