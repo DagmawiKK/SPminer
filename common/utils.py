@@ -274,40 +274,21 @@ def standardize_graph(graph: nx.Graph, anchor: int = None) -> nx.Graph:
     return g
 
 def batch_nx_graphs(graphs, anchors=None):
-    # Initialize feature augmenter
+    #motifs_batch = [pyg_utils.from_networkx(
+    #    nx.convert_node_labels_to_integers(graph)) for graph in graphs]
+    #loader = DataLoader(motifs_batch, batch_size=len(motifs_batch))
+    #for b in loader: batch = b
     augmenter = feature_preprocess.FeatureAugment()
     
-    # Process graphs with proper attribute handling
-    processed_graphs = []
-    for i, graph in enumerate(graphs):
-        anchor = anchors[i] if anchors is not None else None
-        try:
-            # Standardize graph attributes
-            std_graph = standardize_graph(graph, anchor)
-            
-            # Convert to DeepSnap format
-            ds_graph = DSGraph(std_graph)
-            processed_graphs.append(ds_graph)
-            
-        except Exception as e:
-            # print(f"Warning: Error processing graph {i}: {str(e)}")
-            # Create minimal graph with basic features if conversion fails
-            minimal_graph = nx.Graph()
-            minimal_graph.add_nodes_from(graph.nodes())
-            minimal_graph.add_edges_from(graph.edges())
-            for node in minimal_graph.nodes():
-                minimal_graph.nodes[node]['node_feature'] = torch.tensor([1.0])
-            processed_graphs.append(DSGraph(minimal_graph))
-    
-    # Create batch
-    batch = Batch.from_data_list(processed_graphs)
-    
-    # Suppress the specific warning during augmentation
-    with warnings.catch_warnings():
-        warnings.filterwarnings('ignore', message='Unknown type of key*')
-        batch = augmenter.augment(batch)
-    
-    return batch.to(get_device())
+    if anchors is not None:
+        for anchor, g in zip(anchors, graphs):
+            for v in g.nodes:
+                g.nodes[v]["node_feature"] = torch.tensor([float(v == anchor)])
+
+    batch = Batch.from_data_list([DSGraph(g) for g in graphs])
+    batch = augmenter.augment(batch)
+    batch = batch.to(get_device())
+    return batch
 
 def get_device():
     """Get PyTorch device (GPU if available, otherwise CPU)"""
