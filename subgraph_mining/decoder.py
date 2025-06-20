@@ -259,7 +259,7 @@ def pattern_growth(dataset, task, args):
                     node_id = pattern.nodes[n].get('id', str(n))
                     node_label = pattern.nodes[n].get('label', 'unknown')
                     node_labels[n] = f"{node_id}:\n{node_label}"
-        
+                print("hi from pattern")
                 pos = nx.spring_layout(pattern, k=2.0, seed=42, iterations=50)
         
                 unique_labels = sorted(set(pattern.nodes[n].get('label', 'unknown') for n in pattern.nodes()))

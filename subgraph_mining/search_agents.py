@@ -315,6 +315,7 @@ class GreedySearchAgent(SearchAgent):
                 cand_neighs, anchors = [], []
                 for cand_node in frontier:
                     cand_neigh = graph.subgraph(neigh + [cand_node])
+                    print("hi from step")
                     cand_neighs.append(cand_neigh)
                     if self.node_anchored:
                         anchors.append(neigh[0])
