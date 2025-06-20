@@ -303,144 +303,71 @@ class GreedySearchAgent(SearchAgent):
         return len(self.beam_sets) == 0
 
     def step(self):
-        ps = np.array([len(g) for g in self.dataset], dtype=np.float)
-        ps /= np.sum(ps)
-        graph_dist = stats.rv_discrete(values=(np.arange(len(self.dataset)), ps))
-
-        print("Size", self.max_size)
-        print(len(self.visited_seed_nodes), "distinct seeds")
-        for simulation_n in tqdm(range(self.n_trials //
-                (self.max_pattern_size+1-self.min_pattern_size))):
-            # pick seed node
-            best_graph_idx, best_start_node, best_score = None, None, -float("inf")
-            for cand_graph_idx, cand_start_node in self.visited_seed_nodes:
-                state = cand_graph_idx, cand_start_node
-                my_visit_counts = sum(self.visit_counts[state].values())
-                q_score = (sum(self.cum_action_values[state].values()) /
-                    (my_visit_counts or 1))
-                uct_score = self.c_aggregation * np.sqrt(np.log(simulation_n or 1) /
-                    (my_visit_counts or 1))
-                node_score = q_score + uct_score
-                if node_score > best_score:
-                    best_score = node_score
-                    best_graph_idx = cand_graph_idx
-                    best_start_node = cand_start_node
-            # if existing seed beats choosing a new seed
-            if best_score >= self.c_aggregation * np.sqrt(np.log(simulation_n or 1)):
-                graph_idx, start_node = best_graph_idx, best_start_node
-                assert best_start_node in self.dataset[graph_idx].nodes
+        new_beam_sets = []
+        print("seeds come from", len(set(b[0][-1] for b in self.beam_sets)),
+            "distinct graphs")
+        analyze_embs_cur = []
+        for beam_set in tqdm(self.beam_sets):
+            new_beams = []
+            for _, neigh, frontier, visited, graph_idx in beam_set:
                 graph = self.dataset[graph_idx]
-            else:
-                found = False
-                while not found:
-                    graph_idx = np.arange(len(self.dataset))[graph_dist.rvs()]
-                    graph = self.dataset[graph_idx]
-                    start_node = random.choice(list(graph.nodes))
-                    # don't pick isolated nodes or small islands
-                    if self.has_min_reachable_nodes(graph, start_node,
-                        self.min_pattern_size):
-                        found = True
-                self.visited_seed_nodes.add((graph_idx, start_node))
-            neigh = [start_node]
-            frontier = list(set(graph.neighbors(start_node)) - set(neigh))
-            visited = set([start_node])
-            neigh_g = nx.Graph()
-            neigh_g.add_node(start_node, anchor=1)
-            cur_state = graph_idx, start_node
-            state_list = [cur_state]
-            print("neigh:", neigh)  # Fixed TypeError
-            while frontier and len(neigh) < self.max_size:
+                if len(neigh) >= self.max_pattern_size or not frontier: continue
                 cand_neighs, anchors = [], []
                 for cand_node in frontier:
-                    cand_neigh = graph.subgraph(neigh + [cand_node]).copy()
-                    # Log edge attributes
-                    print(f"Cand_neigh for node {cand_node} edges before: {list(cand_neigh.edges(data=True))[:5]}")
-                    # Preprocess edges
-                    for u, v in cand_neigh.edges():
-                        edge_data = cand_neigh.edges[u, v]
-                        if 'type' not in edge_data or edge_data['type'] is None or edge_data['type'] == {} or not isinstance(edge_data['type'], str):
-                            edge_data['type'] = 'default'
-                            print(f"Fixed edge ({u}, {v}) in cand_neigh: set type='default'")
-                    print(f"Cand_neigh for node {cand_node} edges after: {list(cand_neigh.edges(data=True))[:5]}")
+                    cand_neigh = graph.subgraph(neigh + [cand_node])
                     cand_neighs.append(cand_neigh)
                     if self.node_anchored:
                         anchors.append(neigh[0])
-                try:
-                    cand_embs = self.model.emb_model(utils.batch_nx_graphs(
-                        cand_neighs, anchors=anchors if self.node_anchored else None))
-                except Exception as e:
-                    print(f"Error processing cand_neighs for graph {graph_idx}: {e}")
-                    continue
-                best_v_score, best_node_score = best_node_score, best_v_score = 0, -float("inf"), None
+                cand_embs = self.model.emb_model(utils.batch_nx_graphs(
+                    cand_neighs, anchors=anchors if self.node_anchored else None))
+                best_score, best_node = float("inf"), None
                 for cand_node, cand_emb in zip(frontier, cand_embs):
                     score, n_embs = 0, 0
                     for emb_batch in self.embs:
-                        score += torch.sum(self.model.predict((
-                                emb_batch.to(utils.get_device()), cand_emb))).sum().item()
                         n_embs += len(emb_batch)
-                    EPS = 1e-10
-                    if n_embs > 0:
-                        v_score = -np.log(score/n_embs + EPS) + 1
-                    else:
-                        v_score = 0
-                    neigh_g = graph.subgraph(neigh + [cand_node]).copy()
-                    neigh_g.remove_edges_from(nx.selfloop_edges(neigh_g))
-                    # Log edge attributes
-                    print(f"Neigh_g for cand_node {cand_node} edges before: {list(neigh_g.edges(data=True))[:5]}")
-                    # Preprocess edges
-                    for u, v in neigh_g.edges():
-                        edge_data = neigh_g.edges[u, v]
-                        if 'type' not in edge_data or edge_data['type'] is None or edge_data['type'] == {} or not isinstance(edge_data['type'], str):
-                            edge_data['type'] = 'default'
-                            print(f"Fixed edge ({u}, {v}) in neigh_g: set type='default'")
-                    print(f"Neigh_g for cand_node {cand_node} edges after: {list(neigh_g.edges(data=True))[:5]}")
-                    for v in neigh_g.nodes:
-                        neigh_g.nodes[v]["anchor"] = 1 if v == neigh[0] else 0
-                    next_state = utils.wl_hash(neigh_g,
-                        node_anchored=self.node_anchored)
-                    # compute node score
-                    parent_visit_counts = sum(self.visit_counts[cur_state].values())
-                    my_visit_counts = sum(self.visit_counts[next_state].values())
-                    q_score = (sum(self.cum_action_values[next_state].values()) /
-                        (my_visit_counts or 1))
-                    uct_score = self.c_uct * np.sqrt(np.log(parent_visit_counts or
-                        1) / (my_visit_counts or 1))
-                    node_score = q_score + uct_score
-                    if node_score > best_node_score:
-                        best_node_score = node_score
-                        best_v_score = v_score
+                        if self.model_type == "order":
+                            score -= torch.sum(torch.argmax(
+                                self.model.clf_model(self.model.predict((
+                                emb_batch.to(utils.get_device()),
+                                cand_emb)).unsqueeze(1)), axis=1)).item()
+                        elif self.model_type == "mlp":
+                            score += torch.sum(self.model(
+                                emb_batch.to(utils.get_device()),
+                                cand_emb.unsqueeze(0).expand(len(emb_batch), -1)
+                                )[:,0]).item()
+                        else:
+                            print("unrecognized model type")
+                    if score < best_score:
+                        best_score = score
                         best_node = cand_node
-                frontier = list(((set(frontier) |
-                    set(graph.neighbors(best_node))) - visited) -
-                    set([best_node]))
-                visited.add(best_node)
-                neigh.append(best_node)
-
-                # update visit counts, wl cache
+                    new_frontier = list(((set(frontier) |
+                        set(graph.neighbors(cand_node))) - visited) -
+                        set([cand_node]))
+                    new_beams.append((
+                        score, neigh + [cand_node],
+                        new_frontier, visited | set([cand_node]), graph_idx))
+            new_beams = list(sorted(new_beams, key=lambda x:
+                x[0]))[:self.n_beams]
+            for score, neigh, frontier, visited, graph_idx in new_beams[:1]:
+                graph = self.dataset[graph_idx]
+                # add to record
                 neigh_g = graph.subgraph(neigh).copy()
                 neigh_g.remove_edges_from(nx.selfloop_edges(neigh_g))
-                # Log edge attributes
-                print(f"Final neigh_g edges before: {list(neigh_g.edges(data=True))[:5]}")
-                # Preprocess edges
-                for u, v in neigh_g.edges():
-                    edge_data = neigh_g.edges[u, v]
-                    if 'type' not in edge_data or edge_data['type'] is None or edge_data['type'] == {} or not isinstance(edge_data['type'], str):
-                        edge_data['type'] = 'default'
-                        print(f"Fixed edge ({u}, {v}) in final neigh_g: set type='default'")
-                print(f"Final neigh_g edges after: {list(neigh_g.edges(data=True))[:5]}")
                 for v in neigh_g.nodes:
                     neigh_g.nodes[v]["anchor"] = 1 if v == neigh[0] else 0
-                prev_state = cur_state
-                cur_state = utils.wl_hash(neigh_g, node_anchored=self.node_anchored)
-                state_list.append(cur_state)
-                self.wl_hash_to_graphs[cur_state].append(neigh_g)
-
-            # backprop value
-            for i in range(0, len(state_list) - 1):
-                self.cum_action_values[state_list[i]][
-                    state_list[i+1]] += best_v_score
-                self.visit_counts[state_list[i]][state_list[i+1]] += 1
-        self.max_size += 1
+                self.cand_patterns[len(neigh_g)].append((score, neigh_g))
+                if self.rank_method in ["counts", "hybrid"]:
+                    self.counts[len(neigh_g)][utils.wl_hash(neigh_g,
+                        node_anchored=self.node_anchored)].append(neigh_g)
+                if self.analyze and len(neigh) >= 3:
+                    emb = self.model.emb_model(utils.batch_nx_graphs(
+                        [neigh_g], anchors=[neigh[0]] if self.node_anchored
+                        else None)).squeeze(0)
+                    analyze_embs_cur.append(emb.detach().cpu().numpy())
+            if len(new_beams) > 0:
+                new_beam_sets.append(new_beams)
+        self.beam_sets = new_beam_sets
+        self.analyze_embs.append(analyze_embs_cur)
 
     def finish_search(self):
         if self.analyze:
