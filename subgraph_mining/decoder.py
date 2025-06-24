@@ -441,7 +441,7 @@ def main():
     parser = argparse.ArgumentParser(description='Decoder arguments')
     parse_encoder(parser)
     parse_decoder(parser)
-    parser.add_argument('--n_workers', type=int, default=4, help='Number of worker processes')
+    # parser.add_argument('--n_workers', type=int, default=4, help='Number of worker processes')
     
     args = parser.parse_args()
 
