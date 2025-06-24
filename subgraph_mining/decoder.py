@@ -105,9 +105,9 @@ def pattern_growth_streaming(dataset, task, args):
             
             all_discovered_patterns.extend(chunk_out_graphs)
             
-            if len(all_discovered_patterns) > args.max_total_patterns:
-                print(f"Reached maximum total patterns ({args.max_total_patterns}). Stopping.")
-                break
+            # if len(all_discovered_patterns) > args.max_total_patterns:
+            #     print(f"Reached maximum total patterns ({args.max_total_patterns}). Stopping.")
+            #     break
         
         except Exception as e:
             print(f"Error processing chunk {chunk_index}: {e}")
