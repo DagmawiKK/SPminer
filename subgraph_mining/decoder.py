@@ -3,8 +3,6 @@ import csv
 from itertools import combinations
 import time
 import os
-import pickle
-import torch.multiprocessing as mp
 
 from deepsnap.batch import Batch
 import numpy as np
@@ -28,7 +26,7 @@ from common import utils
 from common import combined_syn
 from subgraph_mining.config import parse_decoder
 from subgraph_matching.config import parse_encoder
-from subgraph_mining.search_agents import GreedySearchAgent, MCTSSearchAgent, MemoryEfficientMCTSAgent, MemoryEfficientGreedyAgent, BeamSearchAgent
+from subgraph_mining.search_agents import GreedySearchAgent, MCTSSearchAgent
 
 import matplotlib.pyplot as plt
 
@@ -43,37 +41,23 @@ from queue import PriorityQueue
 import matplotlib.colors as mcolors
 import networkx as nx
 import pickle
+import torch.multiprocessing as mp
 from sklearn.decomposition import PCA
-
-def process_large_graph_in_chunks(graph, chunk_size=10000):
-    graph_chunks = []
-    
-    all_nodes = list(graph.nodes())
-    
-    for i in range(0, len(all_nodes), chunk_size):
-        chunk_nodes = all_nodes[i:i+chunk_size]
-        
-        chunk_graph = graph.subgraph(chunk_nodes)
-        
-        extended_nodes = set(chunk_nodes)
-        for node in chunk_nodes:
-            neighbors = list(graph.neighbors(node))
-            for neighbor in neighbors:
-                if neighbor not in extended_nodes:
-                    extended_nodes.add(neighbor)
-                    if len(extended_nodes) > chunk_size * 1.2:  
-                        break
-        
-        chunk_subgraph = graph.subgraph(extended_nodes)
-        graph_chunks.append(chunk_subgraph)
-    
-    return graph_chunks
 
 def make_plant_dataset(size):
     generator = combined_syn.get_generator([size])
     random.seed(3001)
     np.random.seed(14853)
+    # PATTERN 1
     pattern = generator.generate(size=10)
+    # PATTERN 2
+    #pattern = nx.star_graph(9)
+    # PATTERN 3
+    #pattern = nx.complete_graph(10)
+    # PATTERN 4
+    #pattern = nx.Graph()
+    #pattern.add_edges_from([(1, 2), (2, 3), (3, 4), (4, 5), (5, 6),
+    #    (6, 7), (7, 2), (7, 8), (8, 9), (9, 10), (10, 6)])
     nx.draw(pattern, with_labels=True)
     plt.savefig("plots/cluster/plant-pattern.png")
     plt.close()
@@ -89,54 +73,8 @@ def make_plant_dataset(size):
         graphs.append(graph)
     return graphs
 
-def pattern_growth_streaming(dataset, task, args):
-    if len(dataset) == 1 and dataset[0].number_of_nodes() > 100000:
-        graph = dataset[0]
-        graph_chunks = process_large_graph_in_chunks(graph, chunk_size=args.chunk_size)
-        dataset = graph_chunks
-    
-    all_discovered_patterns = []
-    
-    for chunk_index, chunk_dataset in enumerate(dataset):
-        print(f"Processing chunk {chunk_index + 1}/{len(dataset)}")
-        
-        try:
-            chunk_out_graphs = pattern_growth([chunk_dataset], task, args)
-            
-            all_discovered_patterns.extend(chunk_out_graphs)
-            
-            if len(all_discovered_patterns) > args.max_total_patterns:
-                print(f"Reached maximum total patterns ({args.max_total_patterns}). Stopping.")
-                break
-        
-        except Exception as e:
-            print(f"Error processing chunk {chunk_index}: {e}")
-            continue
-    
-    return all_discovered_patterns
-
-def pattern_growth_worker(args, model, task, in_queue, out_queue):
-    """Worker function to process a subset of graphs for pattern growth."""
-    model.eval()
-    device = utils.get_device()
-    model.to(device)
-    
-    while True:
-        msg, data = in_queue.get()
-        if msg == "done":
-            break
-        graph_idx, graph, label = data
-        try:
-            # Process single graph
-            dataset_subset = [(graph, label)] if task == "graph-labeled" else [graph]
-            chunk_outs = pattern_growth(dataset_subset, task, args)
-            out_queue.put(("result", (graph_idx, chunk_outs)))
-        except Exception as e:
-            print(f"Error processing graph {graph_idx}: {e}")
-            out_queue.put(("error", (graph_idx, str(e))))
-
 def pattern_growth(dataset, task, args):
-    start_time = time.time()
+    # init model
     if args.method_type == "end2end":
         model = models.End2EndOrder(1, args.hidden_dim, args)
     elif args.method_type == "mlp":
@@ -150,9 +88,8 @@ def pattern_growth(dataset, task, args):
 
     if task == "graph-labeled":
         dataset, labels = dataset
-    else:
-        labels = [None] * len(dataset)
 
+    # load data
     neighs_pyg, neighs = [], []
     print(len(dataset), "graphs")
     print("search strategy:", args.search_strategy)
@@ -163,19 +100,13 @@ def pattern_growth(dataset, task, args):
         if task == "graph-truncate" and i >= 1000: break
         if not type(graph) == nx.Graph:
             graph = pyg_utils.to_networkx(graph).to_undirected()
-            for node in graph.nodes():
-                if 'label' not in graph.nodes[node]:
-                    graph.nodes[node]['label'] = str(node)
-                if 'id' not in graph.nodes[node]:
-                    graph.nodes[node]['id'] = str(node)
-        graphs.append((graph, labels[i]))
-    
+        graphs.append(graph)
     if args.use_whole_graphs:
-        neighs = [g[0] for g in graphs]
+        neighs = graphs
     else:
         anchors = []
         if args.sample_method == "radial":
-            for i, (graph, _) in enumerate(graphs):
+            for i, graph in enumerate(graphs):
                 print(i)
                 for j, node in enumerate(graph.nodes):
                     if len(dataset) <= 10 and j % 100 == 0: print(i, j)
@@ -188,32 +119,17 @@ def pattern_growth(dataset, task, args):
                             neigh = random.sample(neigh, min(len(neigh),
                                 args.subgraph_sample_size))
                     if len(neigh) > 1:
-                        subgraph = graph.subgraph(neigh)
+                        neigh = graph.subgraph(neigh)
                         if args.subgraph_sample_size != 0:
-                            subgraph = subgraph.subgraph(max(
-                                nx.connected_components(subgraph), key=len))
-                        
-                        orig_attrs = {n: subgraph.nodes[n].copy() for n in subgraph.nodes()}
-                        edge_attrs = {(u,v): subgraph.edges[u,v].copy() 
-                                    for u,v in subgraph.edges()}
-                        
-                        mapping = {old: new for new, old in enumerate(subgraph.nodes())}
-                        subgraph = nx.relabel_nodes(subgraph, mapping)
-                        
-                        for old, new in mapping.items():
-                            subgraph.nodes[new].update(orig_attrs[old])
-                        
-                        for (old_u, old_v), attrs in edge_attrs.items():
-                            subgraph.edges[mapping[old_u], mapping[old_v]].update(attrs)
-                        
-                        subgraph.add_edge(0, 0)
-                        neighs.append(subgraph)
-                        if args.node_anchored:
-                            anchors.append(0)
+                            neigh = neigh.subgraph(max(
+                                nx.connected_components(neigh), key=len))
+                        neigh = nx.convert_node_labels_to_integers(neigh)
+                        neigh.add_edge(0, 0)
+                        neighs.append(neigh)
         elif args.sample_method == "tree":
             start_time = time.time()
             for j in tqdm(range(args.n_neighborhoods)):
-                graph, neigh = utils.sample_neigh([g[0] for g in graphs],
+                graph, neigh = utils.sample_neigh(graphs,
                     random.randint(args.min_neighborhood_size,
                         args.max_neighborhood_size))
                 neigh = graph.subgraph(neigh)
@@ -221,18 +137,20 @@ def pattern_growth(dataset, task, args):
                 neigh.add_edge(0, 0)
                 neighs.append(neigh)
                 if args.node_anchored:
-                    anchors.append(0)
+                    anchors.append(0)   # after converting labels, 0 will be anchor
 
     embs = []
     if len(neighs) % args.batch_size != 0:
         print("WARNING: number of graphs not multiple of batch size")
     for i in range(len(neighs) // args.batch_size):
+        #top = min(len(neighs), (i+1)*args.batch_size)
         top = (i+1)*args.batch_size
         with torch.no_grad():
             batch = utils.batch_nx_graphs(neighs[i*args.batch_size:top],
                 anchors=anchors if args.node_anchored else None)
             emb = model.emb_model(batch)
             emb = emb.to(torch.device("cpu"))
+
         embs.append(emb)
 
     if args.analyze:
@@ -241,198 +159,40 @@ def pattern_growth(dataset, task, args):
 
     if args.search_strategy == "mcts":
         assert args.method_type == "order"
-        if args.memory_efficient:
-            agent = MemoryEfficientMCTSAgent(args.min_pattern_size, args.max_pattern_size,
-                model, [g[0] for g in graphs], embs, node_anchored=args.node_anchored,
-                analyze=args.analyze, out_batch_size=args.out_batch_size)
-        else:
-            agent = MCTSSearchAgent(args.min_pattern_size, args.max_pattern_size,
-                model, [g[0] for g in graphs], embs, node_anchored=args.node_anchored,
-                analyze=args.analyze, out_batch_size=args.out_batch_size)
+        agent = MCTSSearchAgent(args.min_pattern_size, args.max_pattern_size,
+            model, graphs, embs, node_anchored=args.node_anchored,
+            analyze=args.analyze, out_batch_size=args.out_batch_size)
     elif args.search_strategy == "greedy":
-        if args.memory_efficient:
-            agent = MemoryEfficientGreedyAgent(args.min_pattern_size, args.max_pattern_size,
-                model, [g[0] for g in graphs], embs, node_anchored=args.node_anchored,
-                analyze=args.analyze, model_type=args.method_type,
-                out_batch_size=args.out_batch_size)
-        else:
-            agent = GreedySearchAgent(args.min_pattern_size, args.max_pattern_size,
-                model, [g[0] for g in graphs], embs, node_anchored=args.node_anchored,
-                analyze=args.analyze, model_type=args.method_type,
-                out_batch_size=args.out_batch_size)
-    elif args.search_strategy == "beam":
-        agent = BeamSearchAgent(args.min_pattern_size, args.max_pattern_size,
-            model, [g[0] for g in graphs], embs, node_anchored=args.node_anchored,
+        agent = GreedySearchAgent(args.min_pattern_size, args.max_pattern_size,
+            model, graphs, embs, node_anchored=args.node_anchored,
             analyze=args.analyze, model_type=args.method_type,
-            out_batch_size=args.out_batch_size, beam_width=args.beam_width)
+            out_batch_size=args.out_batch_size)
     out_graphs = agent.run_search(args.n_trials)
-    
     print(time.time() - start_time, "TOTAL TIME")
     x = int(time.time() - start_time)
     print(x // 60, "mins", x % 60, "secs")
 
+    # visualize out patterns
     count_by_size = defaultdict(int)
     for pattern in out_graphs:
-            try:
-                plt.figure(figsize=(15, 10))  
-        
-                node_labels = {}
-                for n in pattern.nodes():
-                    node_id = pattern.nodes[n].get('id', str(n))
-                    node_label = pattern.nodes[n].get('label', 'unknown')
-                    node_labels[n] = f"{node_id}:\n{node_label}"
-        
-                pos = nx.spring_layout(pattern, k=2.0, seed=42, iterations=50)
-        
-                unique_labels = sorted(set(pattern.nodes[n].get('label', 'unknown') for n in pattern.nodes()))
-                label_color_map = {label: plt.cm.Set3(i) for i, label in enumerate(unique_labels)}
-        
-                colors = []
-                node_sizes = []
-                node_shapes = []
-                for i, node in enumerate(pattern.nodes()):
-                    node_label = pattern.nodes[node].get('label', 'unknown')
-                    
-                    if args.node_anchored and i == 0:
-                        colors.append('red')
-                        node_sizes.append(5000)
-                        node_shapes.append('s')  
-                    else:
-                        colors.append(label_color_map[node_label])
-                        node_sizes.append(3000)
-                        node_shapes.append('o')  
-        
-                for shape in set(node_shapes):
-                    shape_indices = [i for i, s in enumerate(node_shapes) if s == shape]
-                    nx.draw_networkx_nodes(pattern, pos, 
-                                    nodelist=[list(pattern.nodes())[i] for i in shape_indices],
-                                    node_color=[colors[i] for i in shape_indices], 
-                                    node_size=[node_sizes[i] for i in shape_indices], 
-                                    node_shape=shape,
-                                    edgecolors='black', 
-                                    linewidths=1.5)
-        
-                nx.draw_networkx_edges(pattern, pos, 
-                                width=2,  
-                                edge_color='gray',  
-                                alpha=0.7)  
-        
-                nx.draw_networkx_labels(pattern, pos, 
-                                 labels=node_labels, 
-                                 font_size=9, 
-                                 font_weight='bold',
-                                 font_color='black',
-                                 bbox=dict(facecolor='white', edgecolor='none', alpha=0.7))
-        
-                edge_labels = {(u,v): data.get('type', '') 
-                        for u,v,data in pattern.edges(data=True)}
-                nx.draw_networkx_edge_labels(pattern, pos, 
-                                      edge_labels=edge_labels, 
-                                      font_size=8, 
-                                      font_color='darkred',  
-                                      bbox=dict(facecolor='white', edgecolor='none', alpha=0.7))
-        
-                plt.title(f"Pattern Graph (Size: {len(pattern)} nodes)")
-                plt.axis('off')  
-        
-                pattern_info = [f"{len(pattern)}-{count_by_size[len(pattern)]}"]
-        
-                node_types = sorted(set(pattern.nodes[n].get('label', '') for n in pattern.nodes()))
-                if any(node_types):
-                    pattern_info.append('nodes-' + '-'.join(node_types))
-            
-                edge_types = sorted(set(pattern.edges[e].get('type', '') for e in pattern.edges()))
-                if any(edge_types):
-                    pattern_info.append('edges-' + '-'.join(edge_types))
-        
-                filename = '_'.join(pattern_info)
-                plt.tight_layout()
-                plt.savefig(f"plots/cluster/{filename}.png", bbox_inches='tight', dpi=300)
-                plt.savefig(f"plots/cluster/{filename}.pdf", bbox_inches='tight')
-                plt.close()
-                count_by_size[len(pattern)] += 1
-        
-            except Exception as e:
-                print(f"Error visualizing pattern graph: {e}")
-                continue
+        if args.node_anchored:
+            colors = ["red"] + ["blue"]*(len(pattern)-1)
+            nx.draw(pattern, node_color=colors, with_labels=True)
+        else:
+            nx.draw(pattern)
+        print("Saving plots/cluster/{}-{}.png".format(len(pattern),
+            count_by_size[len(pattern)]))
+        plt.savefig("plots/cluster/{}-{}.png".format(len(pattern),
+            count_by_size[len(pattern)]))
+        plt.savefig("plots/cluster/{}-{}.pdf".format(len(pattern),
+            count_by_size[len(pattern)]))
+        plt.close()
+        count_by_size[len(pattern)] += 1
 
     if not os.path.exists("results"):
         os.makedirs("results")
     with open(args.out_path, "wb") as f:
         pickle.dump(out_graphs, f)
-    
-    return out_graphs
-
-def pattern_growth_parallel(dataset, task, args):
-    """Parallelized pattern growth using multiprocessing."""
-    mp.set_start_method("spawn", force=True)
-    
-    # Initialize queues
-    in_queue = mp.Queue()
-    out_queue = mp.Queue()
-    
-    # Initialize model
-    if args.method_type == "end2end":
-        model = models.End2EndOrder(1, args.hidden_dim, args)
-    elif args.method_type == "mlp":
-        model = models.BaselineMLP(1, args.hidden_dim, args)
-    else:
-        model = models.OrderEmbedder(1, args.hidden_dim, args)
-    model.load_state_dict(torch.load(args.model_path, map_location=utils.get_device()))
-    model.share_memory()
-    
-    # Prepare dataset
-    if task == "graph-labeled":
-        graphs, labels = dataset
-    else:
-        graphs = dataset
-        labels = [None] * len(dataset)
-    
-    # Start workers
-    num_workers = min(args.n_workers, len(graphs))
-    print(f"Starting {num_workers} workers for pattern growth")
-    workers = []
-    for i in range(num_workers):
-        worker = mp.Process(target=pattern_growth_worker, args=(args, model, task, in_queue, out_queue))
-        worker.start()
-        workers.append(worker)
-    
-    # Distribute tasks
-    for idx, (graph, label) in enumerate(zip(graphs, labels)):
-        in_queue.put(("process", (idx, graph, label)))
-    
-    # Signal workers to finish
-    for _ in range(num_workers):
-        in_queue.put(("done", None))
-    
-    # Collect results
-    results = {}
-    error_count = 0
-    all_discovered_patterns = []
-    for _ in range(len(graphs)):
-        msg, data = out_queue.get()
-        if msg == "result":
-            graph_idx, chunk_outs = data
-            results[graph_idx] = chunk_outs
-        elif msg == "error":
-            graph_idx, error_msg = data
-            print(f"Error in graph {graph_idx}: {error_msg}")
-            error_count += 1
-    
-    # Combine results
-    for idx in range(len(graphs)):
-        if idx in results:
-            all_discovered_patterns.extend(results[idx])
-            if len(all_discovered_patterns) > args.max_total_patterns:
-                print(f"Reached maximum total patterns ({args.max_total_patterns}). Stopping.")
-                break
-    
-    # Clean up
-    for worker in workers:
-        worker.join()
-    
-    print(f"Processed {len(graphs)} graphs with {error_count} errors")
-    return all_discovered_patterns
 
 def main():
     if not os.path.exists("plots/cluster"):
@@ -441,21 +201,11 @@ def main():
     parser = argparse.ArgumentParser(description='Decoder arguments')
     parse_encoder(parser)
     parse_decoder(parser)
-    # parser.add_argument('--n_workers', type=int, default=4, help='Number of worker processes')
-    
     args = parser.parse_args()
+    args.dataset = "enzymes"
 
     print("Using dataset {}".format(args.dataset))
-    if args.dataset.endswith('.pkl'):
-        with open(args.dataset, 'rb') as f:
-            data = pickle.load(f)
-            graph = nx.Graph()
-            graph.add_nodes_from(data['nodes'])
-            graph.add_edges_from(data['edges'])
-        dataset = [graph]
-        task = 'graph'
-        print(f"Loaded Neo4j graph with {graph.number_of_nodes()} nodes and {graph.number_of_edges()} edges")
-    elif args.dataset == 'enzymes':
+    if args.dataset == 'enzymes':
         dataset = TUDataset(root='/tmp/ENZYMES', name='ENZYMES')
         task = 'graph'
     elif args.dataset == 'cox2':
@@ -500,13 +250,7 @@ def main():
         dataset = make_plant_dataset(size)
         task = 'graph'
 
-    out_graphs = pattern_growth_parallel(dataset, task, args)
-
-    if not os.path.exists("results"):
-        os.makedirs("results")
-    with open(args.out_path, "wb") as f:
-        pickle.dump(out_graphs, f)
+    pattern_growth(dataset, task, args) 
 
 if __name__ == '__main__':
-    mp.set_start_method("spawn", force=True)
     main()
