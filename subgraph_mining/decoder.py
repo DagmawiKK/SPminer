@@ -47,13 +47,37 @@ from sklearn.decomposition import PCA
 
 def process_large_graph_in_chunks(graph, chunk_size=10000):
     graph_chunks = []
-    
+    # comment: could be optimized
+    """
+    def bfs_chunk(graph, start_node, max_size):
+        visited = set([start_node])
+        queue = [start_node]
+        while queue and len(visited) < max_size:
+            node = queue.pop(0)
+            for neighbor in graph.neighbors(node):
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append(neighbor)
+                    if len(visited) >= max_size:
+                        break
+        return graph.subgraph(visited).copy()
+
+    def process_large_graph_in_chunks(graph, chunk_size=10000):
+        all_nodes = set(graph.nodes())
+        graph_chunks = []
+        while all_nodes:
+            start_node = next(iter(all_nodes))
+            chunk = bfs_chunk(graph, start_node, chunk_size)
+            graph_chunks.append(chunk)
+            all_nodes -= set(chunk.nodes())
+        return graph_chunks
+    """
     all_nodes = list(graph.nodes())
     
     for i in range(0, len(all_nodes), chunk_size):
         chunk_nodes = all_nodes[i:i+chunk_size]
         
-        chunk_graph = graph.subgraph(chunk_nodes)
+        # chunk_graph = graph.subgraph(chunk_nodes) remove not used
         
         extended_nodes = set(chunk_nodes)
         for node in chunk_nodes:
@@ -90,10 +114,9 @@ def make_plant_dataset(size):
     return graphs
 
 def pattern_growth_streaming(dataset, task, args):
-    if len(dataset) == 1 and dataset[0].number_of_nodes() > 100000:
-        graph = dataset[0]
-        graph_chunks = process_large_graph_in_chunks(graph, chunk_size=args.chunk_size)
-        dataset = graph_chunks
+    graph = dataset[0]
+    graph_chunks = process_large_graph_in_chunks(graph, chunk_size=args.chunk_size)
+    dataset = graph_chunks
     
     all_discovered_patterns = []
     
@@ -406,7 +429,10 @@ def main():
         dataset = make_plant_dataset(size)
         task = 'graph'
 
-    pattern_growth(dataset, task, args) 
+    if len(dataset) == 1 and dataset[0].number_of_nodes() > 100000:
+        pattern_growth_streaming(dataset, task, args)
+    else:
+        pattern_growth(dataset, task, args)
 
 if __name__ == '__main__':
     main()
