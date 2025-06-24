@@ -232,12 +232,12 @@ def pattern_growth(dataset, task, args):
             agent = MemoryEfficientGreedyAgent(args.min_pattern_size, args.max_pattern_size,
                 model, graphs, embs, node_anchored=args.node_anchored,
                 analyze=args.analyze, model_type=args.method_type,
-                out_batch_size=args.out_batch_size)
+                out_batch_size=args.out_batch_size, n_workers=args.n_workers) # Pass n_workers
         else:
             agent = GreedySearchAgent(args.min_pattern_size, args.max_pattern_size,
                 model, graphs, embs, node_anchored=args.node_anchored,
                 analyze=args.analyze, model_type=args.method_type,
-                out_batch_size=args.out_batch_size)
+                out_batch_size=args.out_batch_size, n_beams=1, n_workers=args.n_workers) # Pass n_workers
     elif args.search_strategy == "beam":
         agent = BeamSearchAgent(args.min_pattern_size, args.max_pattern_size,
             model, graphs, embs, node_anchored=args.node_anchored,
