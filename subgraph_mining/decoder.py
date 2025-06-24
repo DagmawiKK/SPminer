@@ -113,27 +113,45 @@ def make_plant_dataset(size):
         graphs.append(graph)
     return graphs
 
+def _process_chunk(args_tuple):
+    chunk_dataset, task, args, chunk_index, total_chunks = args_tuple
+    start_time = time.time()
+    last_print = start_time
+    print(f"[{time.strftime('%H:%M:%S')}] Worker PID {os.getpid()} started chunk {chunk_index+1}/{total_chunks}", flush=True)
+    try:
+        # Simulate progress reporting every 10 seconds
+        # If pattern_growth is long-running, you can add prints inside it as well
+        result = None
+        while result is None:
+            now = time.time()
+            if now - last_print >= 10:
+                print(f"[{time.strftime('%H:%M:%S')}] Worker PID {os.getpid()} still processing chunk {chunk_index+1}/{total_chunks} ({int(now-start_time)}s elapsed)", flush=True)
+                last_print = now
+            # Try to run pattern_growth, break if done
+            result = pattern_growth([chunk_dataset], task, args)
+        print(f"[{time.strftime('%H:%M:%S')}] Worker PID {os.getpid()} finished chunk {chunk_index+1}/{total_chunks} in {int(time.time()-start_time)}s", flush=True)
+        return result
+    except Exception as e:
+        print(f"Error processing chunk {chunk_index}: {e}", flush=True)
+        return []
+
 def pattern_growth_streaming(dataset, task, args):
-    if len(dataset) == 1 and dataset[0].number_of_nodes() > 100000:
-        graph = dataset[0]
-        graph_chunks = process_large_graph_in_chunks(graph, chunk_size=args.chunk_size)
-        dataset = graph_chunks
-    
+    graph = dataset[0]
+    graph_chunks = process_large_graph_in_chunks(graph, chunk_size=args.chunk_size)
+    dataset = graph_chunks
+
     all_discovered_patterns = []
-    
-    for chunk_index, chunk_dataset in enumerate(dataset):
-        print(f"Processing chunk {chunk_index + 1}/{len(dataset)}")
-        
-        try:
-            chunk_out_graphs = pattern_growth([chunk_dataset], task, args)
-            
+
+    total_chunks = len(dataset)
+    chunk_args = [(chunk_dataset, task, args, idx, total_chunks) for idx, chunk_dataset in enumerate(dataset)]
+
+    with mp.Pool(processes=4) as pool:
+        results = pool.map(_process_chunk, chunk_args)
+
+    for chunk_out_graphs in results:
+        if chunk_out_graphs:
             all_discovered_patterns.extend(chunk_out_graphs)
-            
-        
-        except Exception as e:
-            print(f"Error processing chunk {chunk_index}: {e}")
-            continue
-    
+
     return all_discovered_patterns
 
 def pattern_growth(dataset, task, args):
