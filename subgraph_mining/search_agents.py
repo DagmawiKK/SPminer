@@ -38,6 +38,7 @@ import matplotlib.colors as mcolors
 import networkx as nx
 import pickle
 import torch.multiprocessing as mp
+mp.set_start_method('spawn', force=True)
 from sklearn.decomposition import PCA
 from functools import lru_cache
 import torch.nn as nn
@@ -320,7 +321,8 @@ def run_greedy_trial(args_tuple):
             for emb_batch in embs:
                 with torch.no_grad():
                     if args.method_type == "order":
-                        pred = model.predict((emb_batch.to(utils.get_device()), cand_emb)).unsqueeze(1)
+                        pred = model.predict((
+                            emb_batch.to(utils.get_device()), cand_emb)).unsqueeze(1)
                         score -= torch.sum(torch.argmax(model.clf_model(pred), axis=1)).item()
                     elif args.method_type == "mlp":
                         pred = model(emb_batch.to(utils.get_device()), cand_emb.unsqueeze(0).expand(len(emb_batch), -1))
