@@ -13,6 +13,7 @@ import torch.optim as optim
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
+from functools import partial
 
 import torch_geometric.utils as pyg_utils
 
@@ -48,6 +49,87 @@ import torch.nn as nn
 def nested_defaultdict_factory():
     """Provides a picklable factory for creating a defaultdict of lists."""
     return defaultdict(list)
+
+# <<< CHANGE: Worker Initializer for efficient data handling
+# These will be global variables within each worker process
+worker_model = None
+worker_dataset = None
+worker_embs = None
+
+def init_worker(model, dataset, embs):
+    """Initializer for each worker process in the pool."""
+    global worker_model, worker_dataset, worker_embs
+    worker_model = model
+    worker_dataset = dataset
+    worker_embs = embs
+
+# <<< CHANGE: Moved the worker function to the top level
+def _process_beam_set_worker(beam_set, max_pattern_size, n_beams, node_anchored, model_type, rank_method, analyze):
+    """
+    Worker function to process a single beam set (a trial).
+    This now accesses data from global variables set by init_worker.
+    """
+    cand_patterns_updates = defaultdict(list)
+    counts_updates = defaultdict(nested_defaultdict_factory)
+    analyze_embs_updates = []
+
+    new_beams = []
+    for _, neigh, frontier, visited, graph_idx in beam_set:
+        graph = worker_dataset[graph_idx]
+        if len(neigh) >= max_pattern_size or not frontier:
+            continue
+
+        cand_neighs, anchors = [], []
+        for cand_node in frontier:
+            cand_neigh = graph.subgraph(neigh + [cand_node])
+            cand_neighs.append(cand_neigh)
+            if node_anchored:
+                anchors.append(neigh[0])
+
+        if not cand_neighs:
+            continue
+
+        cand_embs = worker_model.emb_model(utils.batch_nx_graphs(
+            cand_neighs, anchors=anchors if node_anchored else None))
+
+        beam_candidates = []
+        for cand_node, cand_emb in zip(frontier, cand_embs):
+            score, n_embs = 0, 0
+            for emb_batch in worker_embs:
+                n_embs += len(emb_batch)
+                if model_type == "order":
+                    pred = worker_model.predict((emb_batch.to(utils.get_device()), cand_emb)).unsqueeze(1)
+                    score -= torch.sum(torch.argmax(worker_model.clf_model(pred), axis=1)).item()
+                elif model_type == "mlp":
+                    pred = worker_model(emb_batch.to(utils.get_device()), cand_emb.unsqueeze(0).expand(len(emb_batch), -1))
+                    score += torch.sum(pred[:,0]).item()
+
+            new_frontier = list(((set(frontier) | set(graph.neighbors(cand_node))) - visited) - {cand_node})
+            beam_candidates.append((score, neigh + [cand_node], new_frontier, visited | {cand_node}, graph_idx))
+
+        new_beams_for_set = sorted(beam_candidates, key=lambda x: x[0])[:n_beams]
+        new_beams.extend(new_beams_for_set)
+
+        for score_val, neigh_nodes, _, _, g_idx in new_beams_for_set[:1]:
+            g = worker_dataset[g_idx]
+            neigh_g = g.subgraph(neigh_nodes).copy()
+            neigh_g.remove_edges_from(nx.selfloop_edges(neigh_g))
+            for v in neigh_g.nodes:
+                neigh_g.nodes[v]["anchor"] = 1 if v == neigh_nodes[0] else 0
+
+            cand_patterns_updates[len(neigh_g)].append((score_val, neigh_g))
+            if rank_method in ["counts", "hybrid"]:
+                wl_hash = utils.wl_hash(neigh_g, node_anchored=node_anchored)
+                counts_updates[len(neigh_g)][wl_hash].append(neigh_g)
+
+            if analyze and len(neigh_nodes) >= 3:
+                emb = worker_model.emb_model(utils.batch_nx_graphs(
+                    [neigh_g], anchors=[neigh_nodes[0]] if node_anchored else None)).squeeze(0)
+                analyze_embs_updates.append(emb.detach().cpu().numpy())
+
+    if new_beams:
+        return new_beams, cand_patterns_updates, counts_updates, analyze_embs_updates
+    return None
 
 class SearchAgent:
     """ Class for search strategies to identify frequent subgraphs in embedding space. """
@@ -263,91 +345,27 @@ class GreedySearchAgent(SearchAgent):
     def is_search_done(self):
         return len(self.beam_sets) == 0
 
-    def _process_beam_set(self, beam_set):
-        cand_patterns_updates = defaultdict(list)
-        # <--- CHANGE: Used the picklable factory here too for consistency
-        counts_updates = defaultdict(nested_defaultdict_factory)
-        analyze_embs_updates = []
-
-        new_beams = []
-        for _, neigh, frontier, visited, graph_idx in beam_set:
-            graph = self.dataset[graph_idx]
-            if len(neigh) >= self.max_pattern_size or not frontier:
-                continue
-
-            cand_neighs, anchors = [], []
-            for cand_node in frontier:
-                cand_neigh = graph.subgraph(neigh + [cand_node])
-                cand_neighs.append(cand_neigh)
-                if self.node_anchored:
-                    anchors.append(neigh[0])
-
-            if not cand_neighs:
-                continue
-
-            cand_embs = self.model.emb_model(utils.batch_nx_graphs(
-                cand_neighs, anchors=anchors if self.node_anchored else None))
-
-            beam_candidates = []
-            for cand_node, cand_emb in zip(frontier, cand_embs):
-                score, n_embs = 0, 0
-                for emb_batch in self.embs:
-                    n_embs += len(emb_batch)
-                    if self.model_type == "order":
-                        pred = self.model.predict((emb_batch.to(utils.get_device()), cand_emb)).unsqueeze(1)
-                        score -= torch.sum(torch.argmax(self.model.clf_model(pred), axis=1)).item()
-                    elif self.model_type == "mlp":
-                        pred = self.model(emb_batch.to(utils.get_device()), cand_emb.unsqueeze(0).expand(len(emb_batch), -1))
-                        score += torch.sum(pred[:,0]).item()
-
-                new_frontier = list(((set(frontier) | set(graph.neighbors(cand_node))) - visited) - {cand_node})
-                beam_candidates.append((score, neigh + [cand_node], new_frontier, visited | {cand_node}, graph_idx))
-
-            new_beams_for_set = sorted(beam_candidates, key=lambda x: x[0])[:self.n_beams]
-            new_beams.extend(new_beams_for_set)
-
-            for score_val, neigh_nodes, _, _, g_idx in new_beams_for_set[:1]:
-                g = self.dataset[g_idx]
-                neigh_g = g.subgraph(neigh_nodes).copy()
-                neigh_g.remove_edges_from(nx.selfloop_edges(neigh_g))
-                for v in neigh_g.nodes:
-                    neigh_g.nodes[v]["anchor"] = 1 if v == neigh_nodes[0] else 0
-
-                cand_patterns_updates[len(neigh_g)].append((score_val, neigh_g))
-                if self.rank_method in ["counts", "hybrid"]:
-                    wl_hash = utils.wl_hash(neigh_g, node_anchored=self.node_anchored)
-                    counts_updates[len(neigh_g)][wl_hash].append(neigh_g)
-
-                if self.analyze and len(neigh_nodes) >= 3:
-                    emb = self.model.emb_model(utils.batch_nx_graphs(
-                        [neigh_g], anchors=[neigh_nodes[0]] if self.node_anchored else None)).squeeze(0)
-                    analyze_embs_updates.append(emb.detach().cpu().numpy())
-
-        if new_beams:
-            return new_beams, cand_patterns_updates, counts_updates, analyze_embs_updates
-        return None
-
     def step(self):
         print("seeds come from", len(set(b[0][-1] for b in self.beam_sets)), "distinct graphs")
 
         if self.n_workers <= 1:
+            # Fallback to sequential execution, note this is now much slower due to refactoring.
+            # The main path is the parallel one.
+            print("Running in sequential mode...")
             new_beam_sets_local = []
             analyze_embs_cur = []
-            for beam_set in tqdm(self.beam_sets, desc="Processing trials sequentially"):
-                result = self._process_beam_set(beam_set)
+            for beam_set in tqdm(self.beam_sets):
+                 # Manually call the worker function with all required args
+                result = _process_beam_set_worker(beam_set, self.max_pattern_size, self.n_beams, self.node_anchored, self.model_type, self.rank_method, self.analyze)
                 if result:
                     new_beams, cand_updates, count_updates, analyze_updates = result
                     new_beam_sets_local.append(new_beams)
-                    if self.analyze:
-                        analyze_embs_cur.extend(analyze_updates)
-                    for size, items in cand_updates.items():
-                        self.cand_patterns[size].extend(items)
+                    if self.analyze: analyze_embs_cur.extend(analyze_updates)
+                    for size, items in cand_updates.items(): self.cand_patterns[size].extend(items)
                     for size, hashes in count_updates.items():
-                        for h, graphs in hashes.items():
-                            self.counts[size][h].extend(graphs)
+                        for h, graphs in hashes.items(): self.counts[size][h].extend(graphs)
             self.beam_sets = new_beam_sets_local
-            if self.analyze:
-                self.analyze_embs.append(analyze_embs_cur)
+            if self.analyze: self.analyze_embs.append(analyze_embs_cur)
             return
 
         try:
@@ -355,26 +373,33 @@ class GreedySearchAgent(SearchAgent):
         except RuntimeError:
             pass
 
+        # <<< CHANGE: Create the pool using the initializer pattern
+        initargs = (self.model, self.dataset, self.embs)
+        with mp.Pool(self.n_workers, initializer=init_worker, initargs=initargs) as pool:
+            # Use functools.partial to "pre-fill" the constant arguments of the worker function
+            worker_fn = partial(_process_beam_set_worker,
+                                max_pattern_size=self.max_pattern_size,
+                                n_beams=self.n_beams,
+                                node_anchored=self.node_anchored,
+                                model_type=self.model_type,
+                                rank_method=self.rank_method,
+                                analyze=self.analyze)
+
+            results = list(tqdm(pool.imap(worker_fn, self.beam_sets), total=len(self.beam_sets), desc="Processing trials in parallel"))
+
         new_beam_sets = []
         analyze_embs_cur = []
-        with mp.Pool(self.n_workers) as pool:
-            results = list(tqdm(pool.imap(self._process_beam_set, self.beam_sets), total=len(self.beam_sets), desc="Processing trials in parallel"))
-
         for res in results:
             if res:
                 new_beams, cand_updates, count_updates, analyze_updates = res
                 new_beam_sets.append(new_beams)
-                if self.analyze:
-                    analyze_embs_cur.extend(analyze_updates)
-                for size, items in cand_updates.items():
-                    self.cand_patterns[size].extend(items)
+                if self.analyze: analyze_embs_cur.extend(analyze_updates)
+                for size, items in cand_updates.items(): self.cand_patterns[size].extend(items)
                 for size, hashes in count_updates.items():
-                    for h, graphs in hashes.items():
-                        self.counts[size][h].extend(graphs)
+                    for h, graphs in hashes.items(): self.counts[size][h].extend(graphs)
 
         self.beam_sets = new_beam_sets
-        if self.analyze:
-            self.analyze_embs.append(analyze_embs_cur)
+        if self.analyze: self.analyze_embs.append(analyze_embs_cur)
 
     def finish_search(self):
         if self.analyze:
