@@ -352,20 +352,33 @@ class GreedySearchAgent(SearchAgent):
             # Fallback to sequential execution, note this is now much slower due to refactoring.
             # The main path is the parallel one.
             print("Running in sequential mode...")
+            # Set global variables for the worker function
+            init_worker(self.model, self.dataset, self.embs)
             new_beam_sets_local = []
             analyze_embs_cur = []
-            for beam_set in tqdm(self.beam_sets):
-                 # Manually call the worker function with all required args
-                result = _process_beam_set_worker(beam_set, self.max_pattern_size, self.n_beams, self.node_anchored, self.model_type, self.rank_method, self.analyze)
+            for beam_set in tqdm(self.beam_sets, desc="Processing sequentially"):
+                result = _process_beam_set_worker(
+                    beam_set,
+                    self.max_pattern_size,
+                    self.n_beams,
+                    self.node_anchored,
+                    self.model_type,
+                    self.rank_method,
+                    self.analyze
+                )
                 if result:
                     new_beams, cand_updates, count_updates, analyze_updates = result
                     new_beam_sets_local.append(new_beams)
-                    if self.analyze: analyze_embs_cur.extend(analyze_updates)
-                    for size, items in cand_updates.items(): self.cand_patterns[size].extend(items)
+                    if self.analyze:
+                        analyze_embs_cur.extend(analyze_updates)
+                    for size, items in cand_updates.items():
+                        self.cand_patterns[size].extend(items)
                     for size, hashes in count_updates.items():
-                        for h, graphs in hashes.items(): self.counts[size][h].extend(graphs)
+                        for h, graphs in hashes.items():
+                            self.counts[size][h].extend(graphs)
             self.beam_sets = new_beam_sets_local
-            if self.analyze: self.analyze_embs.append(analyze_embs_cur)
+            if self.analyze:
+                self.analyze_embs.append(analyze_embs_cur)
             return
 
         try:
