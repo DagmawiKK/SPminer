@@ -372,7 +372,7 @@ def main():
         task = 'graph'
     elif args.dataset == 'dblp':
         dataset = TUDataset(root='/tmp/dblp', name='DBLP_v1')
-        task = 'graph-truncate'
+        task = 'graph-truncate '
     elif args.dataset == 'coil':
         dataset = TUDataset(root='/tmp/coil', name='COIL-DEL')
         task = 'graph'
