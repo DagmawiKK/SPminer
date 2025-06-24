@@ -262,6 +262,8 @@ def run_greedy_trial(args_tuple):
     This function is designed to be called by a multiprocessing pool.
     """
     trial_idx, model, graphs, embs, args = args_tuple
+    print(f"[{time.strftime('%H:%M:%S')}] PID {os.getpid()} starting trial {trial_idx}", flush=True)
+
     
     # Each process gets its own unique random seed to ensure diverse search starts
     random.seed(int.from_bytes(os.urandom(4), 'little') + trial_idx)
@@ -287,6 +289,12 @@ def run_greedy_trial(args_tuple):
     # --- Pattern Growth Loop ---
     # This loop was adapted from the original `step` method.
     while len(neigh) < args.max_pattern_size and frontier:
+        step_count += 1
+        now = time.time()
+        if now - last_print > 5:  # Print every 5 seconds
+            print(f"[{time.strftime('%H:%M:%S')}] PID {os.getpid()} trial {trial_idx} at step {step_count} (pattern size {len(neigh)})", flush=True)
+            last_print = now
+
         cand_neighs, anchors = [], []
         for cand_node in frontier:
             cand_neigh = graph.subgraph(neigh + [cand_node])
@@ -336,7 +344,7 @@ def run_greedy_trial(args_tuple):
             
             trial_patterns[len(neigh_g)].append((best_score, neigh_g))
             trial_counts[len(neigh_g)][utils.wl_hash(neigh_g, node_anchored=args.node_anchored)].append(neigh_g)
-
+    print(f"[{time.strftime('%H:%M:%S')}] PID {os.getpid()} finished trial {trial_idx} (final pattern size {len(neigh)})", flush=True)
     return trial_patterns, trial_counts
 class GreedySearchAgent(SearchAgent):
     def __init__(self, min_pattern_size, max_pattern_size, model, dataset,
