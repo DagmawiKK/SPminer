@@ -238,7 +238,7 @@ def pattern_growth(dataset, task, args):
                 neigh.add_edge(0, 0)
                 neighs.append(neigh)
                 if args.node_anchored:
-                    anchors.append(0)   # after converting labels, 0 will be anchor
+                    anchors.append(0)
 
     embs = []
     if len(neighs) % args.batch_size != 0:
@@ -256,6 +256,9 @@ def pattern_growth(dataset, task, args):
         embs_np = torch.stack(embs).numpy()
         plt.scatter(embs_np[:,0], embs_np[:,1], label="node neighborhood")
 
+    if not hasattr(args, 'n_workers'):
+        args.n_workers = mp.cpu_count()
+
     if args.search_strategy == "mcts":
         assert args.method_type == "order"
         if args.memory_efficient:
@@ -271,12 +274,14 @@ def pattern_growth(dataset, task, args):
             agent = MemoryEfficientGreedyAgent(args.min_pattern_size, args.max_pattern_size,
                 model, graphs, embs, node_anchored=args.node_anchored,
                 analyze=args.analyze, model_type=args.method_type,
-                out_batch_size=args.out_batch_size) # Pass n_workers
+                out_batch_size=args.out_batch_size)
         else:
             agent = GreedySearchAgent(args.min_pattern_size, args.max_pattern_size,
                 model, graphs, embs, node_anchored=args.node_anchored,
                 analyze=args.analyze, model_type=args.method_type,
-                out_batch_size=args.out_batch_size, n_beams=1) # Pass n_workers
+                out_batch_size=args.out_batch_size, n_beams=1,
+                n_workers=args.n_workers)
+        agent.args = args
     elif args.search_strategy == "beam":
         agent = BeamSearchAgent(args.min_pattern_size, args.max_pattern_size,
             model, graphs, embs, node_anchored=args.node_anchored,
