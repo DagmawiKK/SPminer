@@ -39,18 +39,18 @@ from queue import PriorityQueue
 import matplotlib.colors as mcolors
 import networkx as nx
 import pickle
-import torch.multiprocessing as mp # <-- Import multiprocessing
+import torch.multiprocessing as mp
 from sklearn.decomposition import PCA
 from functools import lru_cache
 import torch.nn as nn
 
+# <--- CHANGE: Defined a picklable top-level function to replace the lambda
+def nested_defaultdict_factory():
+    """Provides a picklable factory for creating a defaultdict of lists."""
+    return defaultdict(list)
+
 class SearchAgent:
-    """ Class for search strategies to identify frequent subgraphs in embedding space.
-    The problem is formulated as a search. The first action chooses a seed node to grow from.
-    Subsequent actions chooses a node in dataset to connect to the existing subgraph pattern,
-    increasing the pattern size by 1.
-    See paper for rationale and algorithm details.
-    """
+    """ Class for search strategies to identify frequent subgraphs in embedding space. """
     def __init__(self, min_pattern_size, max_pattern_size, model, dataset,
         embs, node_anchored=False, analyze=False, model_type="order",
         out_batch_size=20):
@@ -66,7 +66,8 @@ class SearchAgent:
 
     def run_search(self, n_trials=1000):
         self.cand_patterns = defaultdict(list)
-        self.counts = defaultdict(lambda: defaultdict(list))
+        # <--- CHANGE: Replaced the unpicklable lambda with our named function
+        self.counts = defaultdict(nested_defaultdict_factory)
         self.n_trials = n_trials
 
         self.init_search()
@@ -82,6 +83,7 @@ class SearchAgent:
 
     def finish_search(self):
         raise NotImplementedError
+
 
 class MCTSSearchAgent(SearchAgent):
     def __init__(self, min_pattern_size, max_pattern_size, model, dataset,
@@ -262,12 +264,9 @@ class GreedySearchAgent(SearchAgent):
         return len(self.beam_sets) == 0
 
     def _process_beam_set(self, beam_set):
-        """
-        Worker function to process a single beam set (a trial).
-        This function is executed in a separate process.
-        """
         cand_patterns_updates = defaultdict(list)
-        counts_updates = defaultdict(lambda: defaultdict(list))
+        # <--- CHANGE: Used the picklable factory here too for consistency
+        counts_updates = defaultdict(nested_defaultdict_factory)
         analyze_embs_updates = []
 
         new_beams = []
@@ -304,11 +303,9 @@ class GreedySearchAgent(SearchAgent):
                 new_frontier = list(((set(frontier) | set(graph.neighbors(cand_node))) - visited) - {cand_node})
                 beam_candidates.append((score, neigh + [cand_node], new_frontier, visited | {cand_node}, graph_idx))
 
-            # Select the top candidates for the new beam
             new_beams_for_set = sorted(beam_candidates, key=lambda x: x[0])[:self.n_beams]
             new_beams.extend(new_beams_for_set)
 
-            # Record patterns from the best new beam
             for score_val, neigh_nodes, _, _, g_idx in new_beams_for_set[:1]:
                 g = self.dataset[g_idx]
                 neigh_g = g.subgraph(neigh_nodes).copy()
@@ -333,7 +330,6 @@ class GreedySearchAgent(SearchAgent):
     def step(self):
         print("seeds come from", len(set(b[0][-1] for b in self.beam_sets)), "distinct graphs")
 
-        # Use sequential execution if only one worker is specified
         if self.n_workers <= 1:
             new_beam_sets_local = []
             analyze_embs_cur = []
@@ -344,7 +340,6 @@ class GreedySearchAgent(SearchAgent):
                     new_beam_sets_local.append(new_beams)
                     if self.analyze:
                         analyze_embs_cur.extend(analyze_updates)
-                    # Merge results directly
                     for size, items in cand_updates.items():
                         self.cand_patterns[size].extend(items)
                     for size, hashes in count_updates.items():
@@ -355,27 +350,22 @@ class GreedySearchAgent(SearchAgent):
                 self.analyze_embs.append(analyze_embs_cur)
             return
 
-        # Use multiprocessing pool for parallel execution
         try:
-            # 'spawn' is safer, especially with CUDA
             mp.set_start_method('spawn', force=True)
         except RuntimeError:
-            pass # Context has been already set
+            pass
 
         new_beam_sets = []
         analyze_embs_cur = []
         with mp.Pool(self.n_workers) as pool:
-            # Use imap for memory efficiency and tqdm for progress bar
             results = list(tqdm(pool.imap(self._process_beam_set, self.beam_sets), total=len(self.beam_sets), desc="Processing trials in parallel"))
 
-        # Aggregate results from all worker processes
         for res in results:
             if res:
                 new_beams, cand_updates, count_updates, analyze_updates = res
                 new_beam_sets.append(new_beams)
                 if self.analyze:
                     analyze_embs_cur.extend(analyze_updates)
-                # Merge results
                 for size, items in cand_updates.items():
                     self.cand_patterns[size].extend(items)
                 for size, hashes in count_updates.items():
@@ -385,7 +375,6 @@ class GreedySearchAgent(SearchAgent):
         self.beam_sets = new_beam_sets
         if self.analyze:
             self.analyze_embs.append(analyze_embs_cur)
-
 
     def finish_search(self):
         if self.analyze:
@@ -404,7 +393,7 @@ class GreedySearchAgent(SearchAgent):
             plt.close()
 
         cand_patterns_uniq = []
-        for pattern_size in range(self.min_pattern_size, self.max_pattern_size+1):
+        for pattern_size in range(self.min_pattern_size, self.max_pattern_size + 1):
             if self.rank_method == "hybrid":
                 if not self.counts[pattern_size]:
                     cur_rank_method = "margin"
@@ -418,7 +407,6 @@ class GreedySearchAgent(SearchAgent):
                 wl_hashes = set()
                 cands = self.cand_patterns[pattern_size]
                 cand_patterns_uniq_size = []
-                # Use out_batch_size from self, not a potentially undefined variable
                 for pattern in sorted(cands, key=lambda x: x[0]):
                     wl_hash = utils.wl_hash(pattern[1], node_anchored=self.node_anchored)
                     if wl_hash not in wl_hashes:
@@ -438,8 +426,7 @@ class GreedySearchAgent(SearchAgent):
 class MemoryEfficientGreedyAgent(GreedySearchAgent):
     def __init__(self, min_pattern_size, max_pattern_size, model, dataset,
         embs, node_anchored=False, analyze=False, rank_method="counts",
-        model_type="order", out_batch_size=20, batch_size=64, n_workers=1): # Added n_workers
-        # Pass n_workers to parent class
+        model_type="order", out_batch_size=20, batch_size=64, n_workers=1):
         super().__init__(min_pattern_size, max_pattern_size, model, dataset,
             embs, node_anchored=node_anchored, analyze=analyze,
             rank_method=rank_method, model_type=model_type,
@@ -448,11 +435,9 @@ class MemoryEfficientGreedyAgent(GreedySearchAgent):
         self.use_fp16 = torch.cuda.is_available()
 
     def _grow_pattern(self, graph, start_node):
-        # This function remains largely the same but now returns results for aggregation
         neigh = [start_node]
         visited = {start_node}
         frontier = set(graph.neighbors(start_node))
-
         best_score_overall = float('inf')
 
         while frontier and len(neigh) < self.max_pattern_size:
@@ -518,10 +503,10 @@ class MemoryEfficientGreedyAgent(GreedySearchAgent):
         return None, None, None, None
 
     def _parallel_worker(self, beam_set):
-        """Worker function for the memory-efficient agent."""
         all_patterns = []
         cand_updates = defaultdict(list)
-        count_updates = defaultdict(lambda: defaultdict(list))
+        # <--- CHANGE: Used the picklable factory here too
+        count_updates = defaultdict(nested_defaultdict_factory)
         analyze_updates = []
 
         try:
@@ -530,8 +515,7 @@ class MemoryEfficientGreedyAgent(GreedySearchAgent):
                 if len(state) >= 5:
                     _, _, frontier, _, graph_idx = state
                     graph = self.dataset[graph_idx]
-
-                    for node in list(frontier)[:self.batch_size]: # Process a subset of the frontier
+                    for node in list(frontier)[:self.batch_size]:
                         pattern, cand_up, count_up, analyze_up = self._grow_pattern(graph, node)
                         if pattern is not None:
                             all_patterns.append(pattern)
@@ -544,16 +528,13 @@ class MemoryEfficientGreedyAgent(GreedySearchAgent):
                 new_beam = all_patterns[:self.n_beams]
                 return new_beam, cand_updates, count_updates, analyze_updates
         except Exception as e:
-            # It's useful to see errors from worker processes
             print(f"Error in memory-efficient worker: {e}")
         return None
 
     def step(self):
         if torch.cuda.is_available(): torch.cuda.empty_cache()
 
-        # Use the parallel execution logic from the parent class, but with the correct worker function
         if self.n_workers <= 1:
-            # Sequential execution for debugging or single-core use
             new_beam_sets = []
             analyze_embs_cur = []
             for beam_set in tqdm(self.beam_sets, desc="Processing mem-efficient trials sequentially"):
@@ -565,12 +546,10 @@ class MemoryEfficientGreedyAgent(GreedySearchAgent):
                     for size, items in cand_updates.items(): self.cand_patterns[size].extend(items)
                     for size, hashes in count_updates.items():
                         for h, graphs in hashes.items(): self.counts[size][h].extend(graphs)
-
             self.beam_sets = [b for b in new_beam_sets if b]
             if self.analyze: self.analyze_embs.append(analyze_embs_cur)
             return
 
-        # Parallel execution
         try:
             mp.set_start_method('spawn', force=True)
         except RuntimeError:
@@ -579,11 +558,9 @@ class MemoryEfficientGreedyAgent(GreedySearchAgent):
         with mp.Pool(self.n_workers) as pool:
             results = list(tqdm(pool.imap(self._parallel_worker, self.beam_sets), total=len(self.beam_sets), desc="Processing mem-efficient trials in parallel"))
 
-        # Aggregate results
         new_beam_sets = []
         analyze_embs_cur = []
         processed_graphs_count = len(self.beam_sets)
-
         for res in results:
             if res:
                 new_beam, cand_updates, count_updates, analyze_updates = res
@@ -597,9 +574,6 @@ class MemoryEfficientGreedyAgent(GreedySearchAgent):
         self.beam_sets = [b for b in new_beam_sets if b]
         if self.analyze: self.analyze_embs.append(analyze_embs_cur)
 
-
-# The rest of the file remains the same...
-# (MemoryEfficientMCTSAgent and BeamSearchAgent)
 class MemoryEfficientMCTSAgent(MCTSSearchAgent):
     """Memory-efficient MCTS implementation with legacy AMP support"""
     
