@@ -4,6 +4,7 @@ from itertools import combinations
 import time
 import os
 import pickle
+import torch.multiprocessing as mp
 
 from deepsnap.batch import Batch
 import numpy as np
@@ -42,7 +43,6 @@ from queue import PriorityQueue
 import matplotlib.colors as mcolors
 import networkx as nx
 import pickle
-import torch.multiprocessing as mp
 from sklearn.decomposition import PCA
 
 def process_large_graph_in_chunks(graph, chunk_size=10000):
@@ -115,6 +115,26 @@ def pattern_growth_streaming(dataset, task, args):
     
     return all_discovered_patterns
 
+def pattern_growth_worker(args, model, task, in_queue, out_queue):
+    """Worker function to process a subset of graphs for pattern growth."""
+    model.eval()
+    device = utils.get_device()
+    model.to(device)
+    
+    while True:
+        msg, data = in_queue.get()
+        if msg == "done":
+            break
+        graph_idx, graph, label = data
+        try:
+            # Process single graph
+            dataset_subset = [(graph, label)] if task == "graph-labeled" else [graph]
+            chunk_outs = pattern_growth(dataset_subset, task, args)
+            out_queue.put(("result", (graph_idx, chunk_outs)))
+        except Exception as e:
+            print(f"Error processing graph {graph_idx}: {e}")
+            out_queue.put(("error", (graph_idx, str(e))))
+
 def pattern_growth(dataset, task, args):
     start_time = time.time()
     if args.method_type == "end2end":
@@ -130,6 +150,8 @@ def pattern_growth(dataset, task, args):
 
     if task == "graph-labeled":
         dataset, labels = dataset
+    else:
+        labels = [None] * len(dataset)
 
     neighs_pyg, neighs = [], []
     print(len(dataset), "graphs")
@@ -146,14 +168,14 @@ def pattern_growth(dataset, task, args):
                     graph.nodes[node]['label'] = str(node)
                 if 'id' not in graph.nodes[node]:
                     graph.nodes[node]['id'] = str(node)
-        graphs.append(graph)
+        graphs.append((graph, labels[i]))
     
     if args.use_whole_graphs:
-        neighs = graphs
+        neighs = [g[0] for g in graphs]
     else:
         anchors = []
         if args.sample_method == "radial":
-            for i, graph in enumerate(graphs):
+            for i, (graph, _) in enumerate(graphs):
                 print(i)
                 for j, node in enumerate(graph.nodes):
                     if len(dataset) <= 10 and j % 100 == 0: print(i, j)
@@ -191,12 +213,12 @@ def pattern_growth(dataset, task, args):
         elif args.sample_method == "tree":
             start_time = time.time()
             for j in tqdm(range(args.n_neighborhoods)):
-                graph, neigh = utils.sample_neigh(graphs,
+                graph, neigh = utils.sample_neigh([g[0] for g in graphs],
                     random.randint(args.min_neighborhood_size,
                         args.max_neighborhood_size))
                 neigh = graph.subgraph(neigh)
                 neigh = nx.convert_node_labels_to_integers(neigh)
-                neigh.add_edge(0, 0, weight=1.0, type='default')
+                neigh.add_edge(0, 0)
                 neighs.append(neigh)
                 if args.node_anchored:
                     anchors.append(0)
@@ -221,26 +243,26 @@ def pattern_growth(dataset, task, args):
         assert args.method_type == "order"
         if args.memory_efficient:
             agent = MemoryEfficientMCTSAgent(args.min_pattern_size, args.max_pattern_size,
-                model, graphs, embs, node_anchored=args.node_anchored,
+                model, [g[0] for g in graphs], embs, node_anchored=args.node_anchored,
                 analyze=args.analyze, out_batch_size=args.out_batch_size)
         else:
             agent = MCTSSearchAgent(args.min_pattern_size, args.max_pattern_size,
-                model, graphs, embs, node_anchored=args.node_anchored,
+                model, [g[0] for g in graphs], embs, node_anchored=args.node_anchored,
                 analyze=args.analyze, out_batch_size=args.out_batch_size)
     elif args.search_strategy == "greedy":
         if args.memory_efficient:
             agent = MemoryEfficientGreedyAgent(args.min_pattern_size, args.max_pattern_size,
-                model, graphs, embs, node_anchored=args.node_anchored,
+                model, [g[0] for g in graphs], embs, node_anchored=args.node_anchored,
                 analyze=args.analyze, model_type=args.method_type,
                 out_batch_size=args.out_batch_size)
         else:
             agent = GreedySearchAgent(args.min_pattern_size, args.max_pattern_size,
-                model, graphs, embs, node_anchored=args.node_anchored,
+                model, [g[0] for g in graphs], embs, node_anchored=args.node_anchored,
                 analyze=args.analyze, model_type=args.method_type,
                 out_batch_size=args.out_batch_size)
     elif args.search_strategy == "beam":
         agent = BeamSearchAgent(args.min_pattern_size, args.max_pattern_size,
-            model, graphs, embs, node_anchored=args.node_anchored,
+            model, [g[0] for g in graphs], embs, node_anchored=args.node_anchored,
             analyze=args.analyze, model_type=args.method_type,
             out_batch_size=args.out_batch_size, beam_width=args.beam_width)
     out_graphs = agent.run_search(args.n_trials)
@@ -259,7 +281,7 @@ def pattern_growth(dataset, task, args):
                     node_id = pattern.nodes[n].get('id', str(n))
                     node_label = pattern.nodes[n].get('label', 'unknown')
                     node_labels[n] = f"{node_id}:\n{node_label}"
-                print("hi from pattern")
+        
                 pos = nx.spring_layout(pattern, k=2.0, seed=42, iterations=50)
         
                 unique_labels = sorted(set(pattern.nodes[n].get('label', 'unknown') for n in pattern.nodes()))
@@ -341,6 +363,77 @@ def pattern_growth(dataset, task, args):
     
     return out_graphs
 
+def pattern_growth_parallel(dataset, task, args):
+    """Parallelized pattern growth using multiprocessing."""
+    mp.set_start_method("spawn", force=True)
+    
+    # Initialize queues
+    in_queue = mp.Queue()
+    out_queue = mp.Queue()
+    
+    # Initialize model
+    if args.method_type == "end2end":
+        model = models.End2EndOrder(1, args.hidden_dim, args)
+    elif args.method_type == "mlp":
+        model = models.BaselineMLP(1, args.hidden_dim, args)
+    else:
+        model = models.OrderEmbedder(1, args.hidden_dim, args)
+    model.load_state_dict(torch.load(args.model_path, map_location=utils.get_device()))
+    model.share_memory()
+    
+    # Prepare dataset
+    if task == "graph-labeled":
+        graphs, labels = dataset
+    else:
+        graphs = dataset
+        labels = [None] * len(dataset)
+    
+    # Start workers
+    num_workers = min(args.n_workers, len(graphs))
+    print(f"Starting {num_workers} workers for pattern growth")
+    workers = []
+    for i in range(num_workers):
+        worker = mp.Process(target=pattern_growth_worker, args=(args, model, task, in_queue, out_queue))
+        worker.start()
+        workers.append(worker)
+    
+    # Distribute tasks
+    for idx, (graph, label) in enumerate(zip(graphs, labels)):
+        in_queue.put(("process", (idx, graph, label)))
+    
+    # Signal workers to finish
+    for _ in range(num_workers):
+        in_queue.put(("done", None))
+    
+    # Collect results
+    results = {}
+    error_count = 0
+    all_discovered_patterns = []
+    for _ in range(len(graphs)):
+        msg, data = out_queue.get()
+        if msg == "result":
+            graph_idx, chunk_outs = data
+            results[graph_idx] = chunk_outs
+        elif msg == "error":
+            graph_idx, error_msg = data
+            print(f"Error in graph {graph_idx}: {error_msg}")
+            error_count += 1
+    
+    # Combine results
+    for idx in range(len(graphs)):
+        if idx in results:
+            all_discovered_patterns.extend(results[idx])
+            if len(all_discovered_patterns) > args.max_total_patterns:
+                print(f"Reached maximum total patterns ({args.max_total_patterns}). Stopping.")
+                break
+    
+    # Clean up
+    for worker in workers:
+        worker.join()
+    
+    print(f"Processed {len(graphs)} graphs with {error_count} errors")
+    return all_discovered_patterns
+
 def main():
     if not os.path.exists("plots/cluster"):
         os.makedirs("plots/cluster")
@@ -348,6 +441,7 @@ def main():
     parser = argparse.ArgumentParser(description='Decoder arguments')
     parse_encoder(parser)
     parse_decoder(parser)
+    parser.add_argument('--n_workers', type=int, default=4, help='Number of worker processes')
     
     args = parser.parse_args()
 
@@ -406,7 +500,13 @@ def main():
         dataset = make_plant_dataset(size)
         task = 'graph'
 
-    pattern_growth(dataset, task, args) 
+    out_graphs = pattern_growth_parallel(dataset, task, args)
+
+    if not os.path.exists("results"):
+        os.makedirs("results")
+    with open(args.out_path, "wb") as f:
+        pickle.dump(out_graphs, f)
 
 if __name__ == '__main__':
+    mp.set_start_method("spawn", force=True)
     main()
