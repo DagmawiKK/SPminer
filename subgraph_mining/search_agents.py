@@ -305,7 +305,7 @@ def run_greedy_trial(trial_idx):
     visited = {start_node}
 
     trial_patterns = defaultdict(list)
-    trial_counts = defaultdict(lambda: defaultdict(list))
+    trial_counts = defaultdict(default_dd_list)
 
     while len(neigh) < worker_args.max_pattern_size and frontier:
         cand_neighs, anchors = [], []
