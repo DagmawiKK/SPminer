@@ -358,11 +358,16 @@ def pattern_growth(dataset, task, args):
                 print(f"Error visualizing pattern graph: {e}")
                 continue
 
+    if not os.path.exists("results"):
+        os.makedirs("results")
+    with open(args.out_path, "wb") as f:
+        pickle.dump(out_graphs, f)
+    
     return out_graphs
 
 def pattern_growth_parallel(dataset, task, args):
     """Parallelized pattern growth using multiprocessing."""
-    mp.set_start_method("spawn", force=True)
+    mp.set_start_method("fork")
     
     # Initialize queues
     in_queue = mp.Queue()
@@ -396,16 +401,15 @@ def pattern_growth_parallel(dataset, task, args):
     
     # Distribute tasks
     for idx, (graph, label) in enumerate(zip(graphs, labels)):
-        in_queue.put(("process", (idx, graph, label)))
-    
+        in_queue.put(("task", (idx, graph, label)))
+        
     # Signal workers to finish
     for _ in range(num_workers):
         in_queue.put(("done", None))
-    
+        
     # Collect results
     results = {}
-    error_count = 0
-    all_discovered_patterns = []
+    error_count = []
     for _ in range(len(graphs)):
         msg, data = out_queue.get()
         if msg == "result":
@@ -415,25 +419,26 @@ def pattern_growth_parallel(dataset, task, args):
             graph_idx, error_msg = data
             print(f"Error in graph {graph_idx}: {error_msg}")
             error_count += 1
-    
+            
     # Combine results
+    all_discovered_patterns = []
     for idx in range(len(graphs)):
         if idx in results:
             all_discovered_patterns.extend(results[idx])
             if len(all_discovered_patterns) > args.max_total_patterns:
                 print(f"Reached maximum total patterns ({args.max_total_patterns}). Stopping.")
                 break
-    
+        
     # Clean up
     for worker in workers:
         worker.join()
-    
+        
     print(f"Processed {len(graphs)} graphs with {error_count} errors")
     return all_discovered_patterns
 
 def main():
     if not os.path.exists("plots/cluster"):
-        os.makedirs("plots/cluster")
+        os.makedirs("plots/graph")
     
     parser = argparse.ArgumentParser(description='Decoder arguments')
     parse_encoder(parser)
@@ -444,7 +449,7 @@ def main():
     
     print("Using dataset {}".format(args.dataset))
     if args.dataset.endswith('.pkl'):
-        with open(args.dataset, 'rb') as f:
+        with open(args.dataset, 'r') as f:
             data = pickle.load(f)
             graph = nx.Graph()
             graph.add_nodes_from(data['nodes'])
@@ -453,19 +458,19 @@ def main():
         task = 'graph'
         print(f"Loaded Neo4j graph with {graph.number_of_nodes()} nodes and {graph.number_of_edges()} edges")
     elif args.dataset == 'enzymes':
-        dataset = TUDataset(root='/tmp/ENZYMES', name='ENZYMES')
+        dataset = TUDataset(root='/tmp/TUDataset', name='ENZYMES')
         task = 'graph'
     elif args.dataset == 'cox2':
-        dataset = TUDataset(root='/tmp/COX2', name='COX2')
+        dataset = TUDataset(root='/tmp/TUDataset', name='COX2')
         task = 'graph'
     elif args.dataset == 'reddit-binary':
-        dataset = TUDataset(root='/tmp/REDDIT-BINARY', name='REDDIT-BINARY')
+        dataset = TUDataset(root='/tmp/TUDataset', name='REDDIT-BINARY')
         task = 'graph'
     elif args.dataset == 'dblp':
-        dataset = TUDataset(root='/tmp/DBLP_v1', name='DBLP_v1')
+        dataset = TUDataset(root='/tmp/TUDataset', name='DBLP_v1')
         task = 'graph-truncate'
     elif args.dataset == 'coil':
-        dataset = TUDataset(root='/tmp/COIL-DEL', name='COIL-DEL')
+        dataset = TUDataset(root='/tmp/TUDataset', name='COIL-DEL')
         task = 'graph'
     elif args.dataset.startswith('roadnet-'):
         graph = nx.Graph()
@@ -481,9 +486,9 @@ def main():
         task = 'graph'
     elif args.dataset in ['diseasome', 'usroads', 'mn-roads', 'infect']:
         fn = {"diseasome": "bio-diseasome.mtx",
-              "usroads": "road-usroads.mtx",
-              "mn-roads": "mn-roads.mtx",
-              "infect": "infect-dublin.edges"}
+            "usroads": "road-usroads.mtx",
+            "mn-roads": "mn-roads.mtx",
+            "infect": "infect-dublin.edges"}
         graph = nx.Graph()
         with open("data/{}".format(fn[args.dataset]), "r") as f:
             for line in f:
@@ -496,14 +501,14 @@ def main():
         size = int(args.dataset.split("-")[-1])
         dataset = make_plant_dataset(size)
         task = 'graph'
-    
+        
     out_graphs = pattern_growth_parallel(dataset, task, args)
     
     if not os.path.exists("results"):
         os.makedirs("results")
-    with open(args.out_path, "wb") as f:
+    with open(args.out_path, "w") as f:
         pickle.dump(out_graphs, f)
-
+        
 if __name__ == '__main__':
-    mp.set_start_method("spawn", force=True)
+    mp.set_start_method("fork", force=True)
     main()
