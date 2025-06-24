@@ -449,7 +449,7 @@ def main():
     
     print("Using dataset {}".format(args.dataset))
     if args.dataset.endswith('.pkl'):
-        with open(args.dataset, 'r') as f:
+        with open(args.dataset, 'rb') as f:
             data = pickle.load(f)
             graph = nx.Graph()
             graph.add_nodes_from(data['nodes'])
