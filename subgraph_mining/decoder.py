@@ -450,10 +450,10 @@ def main():
         dataset = make_plant_dataset(size)
         task = 'graph'
 
-    if len(dataset) == 1 and dataset[0].number_of_nodes() > 100000:
-        pattern_growth_streaming(dataset, task, args)
-    else:
-        pattern_growth(dataset, task, args)
+    # if len(dataset) == 1 and dataset[0].number_of_nodes() > 100000:
+    #     pattern_growth_streaming(dataset, task, args)
+    # else:
+    pattern_growth(dataset, task, args)
 
 if __name__ == '__main__':
     main()
