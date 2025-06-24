@@ -262,9 +262,10 @@ def run_greedy_trial(args_tuple):
     This function is designed to be called by a multiprocessing pool.
     """
     trial_idx, model, graphs, embs, args = args_tuple
+
+    # Print at the start of each trial
     print(f"[{time.strftime('%H:%M:%S')}] PID {os.getpid()} starting trial {trial_idx}", flush=True)
 
-    
     # Each process gets its own unique random seed to ensure diverse search starts
     random.seed(int.from_bytes(os.urandom(4), 'little') + trial_idx)
     np.random.seed(int.from_bytes(os.urandom(4), 'little') + trial_idx)
@@ -273,11 +274,11 @@ def run_greedy_trial(args_tuple):
     ps = np.array([len(g) for g in graphs], dtype=np.float32)
     ps /= np.sum(ps)
     graph_dist = stats.rv_discrete(values=(np.arange(len(graphs)), ps))
-    
+
     graph_idx = np.arange(len(graphs))[graph_dist.rvs()]
     graph = graphs[graph_idx]
     start_node = random.choice(list(graph.nodes))
-    
+
     neigh = [start_node]
     frontier = list(set(graph.neighbors(start_node)) - set(neigh))
     visited = {start_node}
@@ -285,9 +286,11 @@ def run_greedy_trial(args_tuple):
     # Store results for this single trial
     trial_patterns = defaultdict(list)
     trial_counts = defaultdict(lambda: defaultdict(list))
-    
+
     # --- Pattern Growth Loop ---
     # This loop was adapted from the original `step` method.
+    step_count = 0
+    last_print = time.time()
     while len(neigh) < args.max_pattern_size and frontier:
         step_count += 1
         now = time.time()
@@ -301,7 +304,7 @@ def run_greedy_trial(args_tuple):
             cand_neighs.append(cand_neigh)
             if args.node_anchored:
                 anchors.append(neigh[0])
-        
+
         if not cand_neighs:
             break
 
@@ -322,14 +325,14 @@ def run_greedy_trial(args_tuple):
                     elif args.method_type == "mlp":
                         pred = model(emb_batch.to(utils.get_device()), cand_emb.unsqueeze(0).expand(len(emb_batch), -1))
                         score += torch.sum(pred[:,0]).item()
-            
+
             if score < best_score:
                 best_score = score
                 best_node = cand_node
 
         if best_node is None:
             break
-            
+
         frontier = list(((set(frontier) | set(graph.neighbors(best_node))) - visited) - {best_node})
         visited.add(best_node)
         neigh.append(best_node)
@@ -338,12 +341,12 @@ def run_greedy_trial(args_tuple):
         if len(neigh) >= args.min_pattern_size:
             neigh_g = graph.subgraph(neigh).copy()
             neigh_g.remove_edges_from(nx.selfloop_edges(neigh_g))
-            # Ensure anchor attribute is set correctly
             for v_idx, v in enumerate(neigh_g.nodes):
                 neigh_g.nodes[v]["anchor"] = 1 if args.node_anchored and v == neigh[0] else 0
-            
+
             trial_patterns[len(neigh_g)].append((best_score, neigh_g))
             trial_counts[len(neigh_g)][utils.wl_hash(neigh_g, node_anchored=args.node_anchored)].append(neigh_g)
+
     print(f"[{time.strftime('%H:%M:%S')}] PID {os.getpid()} finished trial {trial_idx} (final pattern size {len(neigh)})", flush=True)
     return trial_patterns, trial_counts
 class GreedySearchAgent(SearchAgent):
@@ -394,7 +397,7 @@ class GreedySearchAgent(SearchAgent):
             # Use tqdm to create a progress bar for the parallel execution
             results = list(tqdm(pool.imap_unordered(run_greedy_trial, args_for_pool), total=n_trials))
 
-        # Aggregate the results from all the parallel trials
+        # Aggregate the results from all of the parallel trials
         print("Aggregating results from all worker processes...")
         for trial_patterns, trial_counts in results:
             for size, scored_patterns in trial_patterns.items():
