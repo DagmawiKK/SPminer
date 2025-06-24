@@ -257,6 +257,9 @@ class MCTSSearchAgent(SearchAgent):
                     self.wl_hash_to_graphs[wl_hash]))
                 print("- outputting", count, "motifs of size", pattern_size)
         return cand_patterns_uniq
+def default_dd_list():
+    return defaultdict(list)
+
 def run_greedy_trial(args_tuple):
     """
     Executes a single greedy search trial.
@@ -286,7 +289,7 @@ def run_greedy_trial(args_tuple):
 
     # Store results for this single trial
     trial_patterns = defaultdict(list)
-    trial_counts = defaultdict(lambda: defaultdict(list))
+    trial_counts = defaultdict(default_dd_list)
 
     # --- Pattern Growth Loop ---
     # This loop was adapted from the original `step` method.
