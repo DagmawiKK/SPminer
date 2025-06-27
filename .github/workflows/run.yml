@@ -2,9 +2,9 @@ name: Run Decoder
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -78,13 +78,31 @@ jobs:
               ls -la /app/plots/cluster
               ls -la /app/results
               "
+      - name: Run pattern counter in Docker container
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/app \
+            -e PYTHONUNBUFFERED=1 \
+            decoder-image:latest \
+            bash -c "
+              set -e
+              export PYTHONPATH=/app
+              echo 'Running pattern counter...'
+              python -m analyze.count_patterns.py \
+                --dataset=results/patterns.pkl \
+                --out_path=results/ \
+                --node_anchored \
+                --preserve_labels
+              echo 'Counting completed.'
+              ls -la /app/results
+            "
 
       - name: Check for generated files
         run: |
           echo "Checking plots directory:"
-          ls -R plots/ || echo "No plots directory found"
+          ls -R plots/  echo "No plots directory found"
           echo "Checking results directory:"
-          ls -R results/ || echo "No results directory found"
+          ls -R results/  echo "No results directory found"
 
       - name: Upload plots as artifact
         if: always()
