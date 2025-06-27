@@ -31,6 +31,8 @@ from scipy.io import mmread
 import scipy.stats as stats
 from sklearn.manifold import TSNE
 from sklearn.cluster import KMeans, AgglomerativeClustering
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="sklearn.*")
 from collections import defaultdict
 from itertools import permutations
 from queue import PriorityQueue
@@ -270,6 +272,8 @@ def init_greedy_worker(model, graphs, embs, args):
     Initializer function for each worker process in the pool.
     This runs ONCE per worker and loads the large data into its global scope.
     """
+    import warnings
+    warnings.filterwarnings("ignore", category=DeprecationWarning, module="sklearn.*")
     global worker_model, worker_graphs, worker_embs, worker_args
     print(f"[{time.strftime('%H:%M:%S')}] Worker PID {os.getpid()} initializing...", flush=True)
     worker_model = model
