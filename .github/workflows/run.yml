@@ -61,8 +61,6 @@ jobs:
           echo "percent_used=$PERCENT_USED" >> $GITHUB_OUTPUT
 
       - name: Run decoder in Docker container
-        env:
-            PYTHONWARNINGS: "ignore::DeprecationWarning"
         run: |
           docker run --rm \
             -v ${{ github.workspace }}:/app \
