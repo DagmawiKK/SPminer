@@ -456,4 +456,6 @@ def main():
     pattern_growth(dataset, task, args)
 
 if __name__ == '__main__':
+    import warnings
+    warnings.filterwarnings("ignore", category=DeprecationWarning)
     main()
