@@ -88,7 +88,7 @@ jobs:
               set -e
               export PYTHONPATH=/app
               echo 'Running pattern counter...'
-              python -m analyze.count_patterns.py \
+              python -m analyze.count_patterns \
                 --dataset=results/patterns.pkl \
                 --out_path=results/ \
                 --node_anchored \
