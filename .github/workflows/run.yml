@@ -62,7 +62,7 @@ jobs:
 
       - name: Run decoder in Docker container
         env:
-            PYTHONWARNINGS: "ignore::DeprecationWarning:sklearn"
+            PYTHONWARNINGS: "ignore::DeprecationWarning"
         run: |
           docker run --rm \
             -v ${{ github.workspace }}:/app \
