@@ -136,7 +136,7 @@ class MCTSSearchAgent(SearchAgent):
         return False
 
     def step(self):
-        ps = np.array([len(g) for g in self.dataset], dtype=np.float)
+        ps = np.array([len(g) for g in self.dataset], dtype=float)
         ps /= np.sum(ps)
         graph_dist = stats.rv_discrete(values=(np.arange(len(self.dataset)), ps))
 
