@@ -284,14 +284,11 @@ def run_greedy_trial(trial_idx):
     Executes a single greedy search trial.
     It now accesses the large data from global variables, avoiding data transfer.
     """
-    # Access the large data from the worker's global scope
     global worker_model, worker_graphs, worker_embs, worker_args
     
-    # Each process gets its own unique random seed
     random.seed(int.from_bytes(os.urandom(4), 'little') + trial_idx)
     np.random.seed(int.from_bytes(os.urandom(4), 'little') + trial_idx)
 
-    # --- The rest of the function is the same, but uses the global variables ---
     ps = np.array([len(g) for g in worker_graphs], dtype=np.float32)
     ps /= np.sum(ps)
     graph_dist = stats.rv_discrete(values=(np.arange(len(worker_graphs)), ps))
@@ -358,7 +355,6 @@ def run_greedy_trial(trial_idx):
             
     return trial_patterns, trial_counts
 
-# --- End: Truly Optimized Worker Setup for Greedy Search ---
 
 
 class GreedySearchAgent(SearchAgent):
@@ -383,19 +379,14 @@ class GreedySearchAgent(SearchAgent):
         self.counts = defaultdict(lambda: defaultdict(list))
         self.n_trials = n_trials
 
-        # Arguments for the initializer function. These are sent ONCE per worker.
         init_args = (self.model, self.dataset, self.embs, self.args)
         
-        # The arguments for the main worker function are now just the trial indices.
         args_for_pool = range(n_trials)
 
         print(f"Starting {n_trials} search trials on {self.n_workers} cores...")
-        # Create a pool that initializes each worker with the large data
         with mp.Pool(processes=self.n_workers, initializer=init_greedy_worker, initargs=init_args) as pool:
-            # map_async is a good choice for dispatching all jobs at once.
             results = list(tqdm(pool.imap_unordered(run_greedy_trial, args_for_pool), total=n_trials))
 
-        # Aggregate the results from all parallel trials
         print("Aggregating results from all worker processes...")
         for trial_patterns, trial_counts in results:
             for size, scored_patterns in trial_patterns.items():
@@ -406,7 +397,6 @@ class GreedySearchAgent(SearchAgent):
 
         return self.finish_search()
 
-    # finish_search and other methods remain the same
     def finish_search(self):
         """
         Processes the aggregated results from all trials to find the most frequent patterns.
