@@ -178,7 +178,7 @@ def pattern_growth(dataset, task, args):
     for i, graph in enumerate(dataset):
         if task == "graph-labeled" and labels[i] != 0: continue
         if task == "graph-truncate" and i >= 1000: break
-        if not type(graph) == nx.Graph:
+        if not type(graph) == nx.Graph and not type(graph) == nx.DiGraph:
             graph = pyg_utils.to_networkx(graph).to_undirected()
             for node in graph.nodes():
                 if 'label' not in graph.nodes[node]:
@@ -399,7 +399,7 @@ def main():
     if args.dataset.endswith('.pkl'):
         with open(args.dataset, 'rb') as f:
             data = pickle.load(f)
-            graph = nx.Graph()
+            graph = nx.DiGraph()
             graph.add_nodes_from(data['nodes'])
             graph.add_edges_from(data['edges'])
         dataset = [graph]
