@@ -55,7 +55,7 @@ def parse_decoder(parser):
     parser.set_defaults(
         # Dataset defaults
         dataset="enzymes",
-        batch_size=50,
+        batch_size=10,
         
         # Decoder defaults
         out_path="results/out-patterns.p",

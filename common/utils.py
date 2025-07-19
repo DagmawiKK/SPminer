@@ -340,14 +340,14 @@ def batch_nx_graphs(graphs, anchors=None):
             # Convert to DeepSnap format
             ds_graph = DSGraph(std_graph)
             processed_graphs.append(ds_graph)
-            problem_graph_string = graph_to_string(graph, "p") 
+            problem_graph_string = graph_to_string(graph, t="p") 
             
             # 2. Print the detailed information to your log.
             print(f"\npassed at index {i}.")
             print(problem_graph_string)
             
         except Exception as e:
-            problem_graph_string = graph_to_string(graph, "n") 
+            problem_graph_string = graph_to_string(graph, t="n") 
             
             # 2. Print the detailed information to your log.
             print(f"\n[CRITICAL WARNING] Failed to process graph at index {i}. Creating minimal graph as fallback.")
