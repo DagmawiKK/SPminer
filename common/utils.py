@@ -273,6 +273,50 @@ def standardize_graph(graph: nx.Graph, anchor: int = None) -> nx.Graph:
     
     return g
 
+def graph_to_string(graph: nx.Graph, max_nodes=10, max_edges=10) -> str:
+    """
+    Converts a NetworkX graph into a detailed string for logging,
+    focusing on node and edge attributes.
+
+    Args:
+        graph: The NetworkX graph to inspect.
+        max_nodes: The maximum number of nodes to detail.
+        max_edges: The maximum number of edges to detail.
+
+    Returns:
+        A string representation of the graph's structure.
+    """
+    is_directed = isinstance(graph, nx.DiGraph)
+    info_lines = [
+        f"--- Problematic Graph ---",
+        f"Type: {'Directed' if is_directed else 'Undirected'}",
+        f"Nodes: {graph.number_of_nodes()}, Edges: {graph.number_of_edges()}",
+        f"\n--- Nodes (showing up to {max_nodes}) ---"
+    ]
+
+    # Detail the nodes and their attributes
+    for i, (node_id, attrs) in enumerate(graph.nodes(data=True)):
+        if i >= max_nodes:
+            info_lines.append(f"... and {graph.number_of_nodes() - max_nodes} more nodes.")
+            break
+        # Also show the type of each attribute value, which is crucial for debugging
+        attr_details = {key: (value, type(value).__name__) for key, value in attrs.items()}
+        info_lines.append(f"Node {node_id}: {attr_details}")
+
+    info_lines.append(f"\n--- Edges (showing up to {max_edges}) ---")
+
+    # Detail the edges and their attributes
+    for i, (u, v, attrs) in enumerate(graph.edges(data=True)):
+        if i >= max_edges:
+            info_lines.append(f"... and {graph.number_of_edges() - max_edges} more edges.")
+            break
+        attr_details = {key: (value, type(value).__name__) for key, value in attrs.items()}
+        info_lines.append(f"Edge ({u}, {v}): {attr_details}")
+    
+    info_lines.append("-------------------------\n")
+    
+    return "\n".join(info_lines)
+
 def batch_nx_graphs(graphs, anchors=None):
     # Initialize feature augmenter
     augmenter = feature_preprocess.FeatureAugment()
@@ -288,9 +332,20 @@ def batch_nx_graphs(graphs, anchors=None):
             # Convert to DeepSnap format
             ds_graph = DSGraph(std_graph)
             processed_graphs.append(ds_graph)
+            problem_graph_string = graph_to_string(std_graph) 
+            
+            # 2. Print the detailed information to your log.
+            print(f"\npassed at index {i}.")
+            print(problem_graph_string)
             
         except Exception as e:
-            #print(f"Warning: Error processing graph {i}: {str(e)}")
+            problem_graph_string = graph_to_string(graph) 
+            
+            # 2. Print the detailed information to your log.
+            print(f"\n[CRITICAL WARNING] Failed to process graph at index {i}. Creating minimal graph as fallback.")
+            print(f"Error Message: {str(e)}")
+            print(f"Inspect the graph that caused this error:")
+            print(problem_graph_string)
             # Create minimal graph with basic features if conversion fails
             minimal_graph = nx.Graph()
             minimal_graph.add_nodes_from(graph.nodes())

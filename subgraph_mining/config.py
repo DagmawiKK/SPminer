@@ -55,11 +55,11 @@ def parse_decoder(parser):
     parser.set_defaults(
         # Dataset defaults
         dataset="enzymes",
-        batch_size=1000,
+        batch_size=100,
         
         # Decoder defaults
         out_path="results/out-patterns.p",
-        n_neighborhoods=500,
+        n_neighborhoods=100,
         n_trials=50,
         decode_thresh=0.5,
         radius=3,
