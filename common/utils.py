@@ -222,55 +222,70 @@ def build_optimizer(args, params):
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.opt_restart)
     return scheduler, optimizer
 
+# In utils.py, replace your current standardize_graph with this exact code.
+
+import networkx as nx
+import torch
+
 def standardize_graph(graph: nx.Graph, anchor: int = None) -> nx.Graph:
     """
     Standardize graph attributes to ensure compatibility with DeepSnap.
+    This function converts all meaningful attributes into 'node_feature' and 
+    'edge_feature' tensors and AGGRESSIVELY REMOVES ALL OTHER ATTRIBUTES.
     
     Args:
         graph: Input NetworkX graph
         anchor: Optional anchor node index
         
     Returns:
-        NetworkX graph with standardized attributes
+        A NetworkX graph with only 'node_feature' and 'edge_feature' attributes.
     """
     g = graph.copy()
-    
-    # Standardize edge attributes
-    for u, v in g.edges():
-        edge_data = g.edges[u, v]
-        # Ensure weight exists
-        if 'weight' not in edge_data:
-            edge_data['weight'] = 1.0
-        else:
-            try:
-                edge_data['weight'] = float(edge_data['weight'])
-            except (ValueError, TypeError):
-                edge_data['weight'] = 1.0
-        
-        # Handle edge type
-        if 'type' in edge_data:
-            edge_data['type_str'] = str(edge_data['type'])
-            edge_data['type'] = float(hash(str(edge_data['type'])) % 1000)
-    
-    # Standardize node attributes
+
+    # --- 1. Process Node Attributes ---
+    all_node_labels = {str(data.get('label', '')) for _, data in g.nodes(data=True)}
+    unique_node_labels = sorted(list(all_node_labels))
+    label_map = {label: i for i, label in enumerate(unique_node_labels)}
+
     for node in g.nodes():
         node_data = g.nodes[node]
+        anchor_feature = [1.0] if (anchor is not None and node == anchor) else [0.0]
+        label_feature = [0.0] * len(unique_node_labels)
+        node_label = str(node_data.get('label', ''))
+        if node_label in label_map:
+            label_feature[label_map[node_label]] = 1.0
+
+        final_node_feature = torch.tensor(anchor_feature + label_feature, dtype=torch.float)
+
+        # --- Aggressive Cleanup: Remove ALL original keys from the node ---
+        for key in list(node_data.keys()):
+            del node_data[key]
         
-        # Initialize node features if needed
-        if anchor is not None:
-            node_data['node_feature'] = torch.tensor([float(node == anchor)])
-        elif 'node_feature' not in node_data:
-            # Default feature if no anchor specified
-            node_data['node_feature'] = torch.tensor([1.0])
-            
-        # Ensure label exists
-        if 'label' not in node_data:
-            node_data['label'] = str(node)
-            
-        # Ensure id exists
-        if 'id' not in node_data:
-            node_data['id'] = str(node)
-    
+        # Add the single, standardized feature vector back
+        node_data['node_feature'] = final_node_feature
+
+    # --- 2. Process Edge Attributes ---
+    all_edge_types = {str(data.get('type', '')) for _, _, data in g.edges(data=True)}
+    unique_edge_types = sorted(list(all_edge_types))
+    type_map = {etype: i for i, etype in enumerate(unique_edge_types)}
+
+    for u, v in g.edges():
+        edge_data = g.edges[u, v]
+        weight_feature = [float(edge_data.get('weight', 1.0))]
+        type_feature = [0.0] * len(unique_edge_types)
+        edge_type_str = str(edge_data.get('type', ''))
+        if edge_type_str in type_map:
+            type_feature[type_map[edge_type_str]] = 1.0
+        
+        final_edge_feature = torch.tensor(weight_feature + type_feature, dtype=torch.float)
+
+        # --- Aggressive Cleanup: Remove ALL original keys from the edge ---
+        for key in list(edge_data.keys()):
+            del edge_data[key]
+        
+        # Add the single, standardized feature vector back
+        edge_data['edge_feature'] = final_edge_feature
+
     return g
 
 # In utils.py
