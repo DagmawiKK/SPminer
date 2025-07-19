@@ -222,8 +222,9 @@ def build_optimizer(args, params):
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.opt_restart)
     return scheduler, optimizer
 
-def standardize_graph(graph: nx.Graph, anchor: int = None, label_map=None) -> nx.Graph:
+def standardize_graph(graph: nx.Graph, anchor: int = None, label_map=None, edge_type_map=None) -> nx.Graph:
     g = graph.copy()
+    
     # --- 1. Process Node Attributes ---
     if label_map is None:
         all_node_labels = {str(data.get('label', '')) for _, data in g.nodes(data=True)}
@@ -244,17 +245,19 @@ def standardize_graph(graph: nx.Graph, anchor: int = None, label_map=None) -> nx
         node_data['node_feature'] = final_node_feature
 
     # --- 2. Process Edge Attributes ---
-    all_edge_types = {str(data.get('type', '')) for _, _, data in g.edges(data=True)}
-    unique_edge_types = sorted(list(all_edge_types))
-    type_map = {etype: i for i, etype in enumerate(unique_edge_types)}
+    if edge_type_map is None:
+        all_edge_types = {str(data.get('type', '')) for _, _, data in g.edges(data=True)}
+        unique_edge_types = sorted(list(all_edge_types))
+        edge_type_map = {etype: i for i, etype in enumerate(unique_edge_types)}
+    unique_edge_types = list(edge_type_map.keys())
 
     for u, v in g.edges():
         edge_data = g.edges[u, v]
         weight_feature = [float(edge_data.get('weight', 1.0))]
         type_feature = [0.0] * len(unique_edge_types)
         edge_type_str = str(edge_data.get('type', ''))
-        if edge_type_str in type_map:
-            type_feature[type_map[edge_type_str]] = 1.0
+        if edge_type_str in edge_type_map:
+            type_feature[edge_type_map[edge_type_str]] = 1.0
         
         final_edge_feature = torch.tensor(weight_feature + type_feature, dtype=torch.float)
 
@@ -308,6 +311,14 @@ def graph_to_string(graph: nx.Graph, title: str, max_nodes=10, max_edges=10) -> 
     
     return "\n".join(info_lines)
 
+def get_global_edge_type_map(graphs):
+    all_edge_types = set()
+    for g in graphs:
+        for _, _, data in g.edges(data=True):
+            all_edge_types.add(str(data.get('type', '')))
+    unique_edge_types = sorted(list(all_edge_types))
+    return {etype: i for i, etype in enumerate(unique_edge_types)}
+
 def batch_nx_graphs(graphs, anchors=None):
     # Initialize feature augmenter
     augmenter = feature_preprocess.FeatureAugment()
@@ -315,13 +326,15 @@ def batch_nx_graphs(graphs, anchors=None):
     # Process graphs with proper attribute handling
     processed_graphs = []
     global_label_map = get_global_label_map(graphs)
+    global_edge_type_map = get_global_edge_type_map(graphs)
+    
     for i, graph in enumerate(graphs):
         anchor = anchors[i] if anchors is not None else None
         std_graph = None
 
         try:
-            # 1. Standardize graph attributes
-            std_graph = standardize_graph(graph, anchor, label_map=global_label_map)
+            # 1. Standardize graph attributes with global maps
+            std_graph = standardize_graph(graph, anchor, label_map=global_label_map, edge_type_map=global_edge_type_map)
             
             # 2. Attempt the potentially failing operation
             ds_graph = DSGraph(std_graph)
@@ -347,17 +360,26 @@ def batch_nx_graphs(graphs, anchors=None):
             if std_graph is not None:
                 print(graph_to_string(std_graph, title=f"Graph {i}: INTERMEDIATE STATE (This graph was rejected by DSGraph)"))
             
-            # Create minimal graph as a fallback
+            # Create minimal graph as a fallback with consistent dimensions
             minimal_graph = nx.Graph()
             minimal_graph.add_nodes_from(graph.nodes())
             minimal_graph.add_edges_from(graph.edges())
+            
+            # Use the same global maps for consistency
             for node in minimal_graph.nodes():
-                minimal_graph.nodes[node]['node_feature'] = torch.tensor([1.0])
+                anchor_feature = [1.0] if (anchor is not None and node == anchor) else [0.0]
+                label_feature = [0.0] * len(global_label_map)
+                minimal_graph.nodes[node]['node_feature'] = torch.tensor(anchor_feature + label_feature, dtype=torch.float)
+            
+            for u, v in minimal_graph.edges():
+                weight_feature = [1.0]
+                type_feature = [0.0] * len(global_edge_type_map)
+                minimal_graph.edges[u, v]['edge_feature'] = torch.tensor(weight_feature + type_feature, dtype=torch.float)
+                
             processed_graphs.append(DSGraph(minimal_graph))
     
     # Create batch
     batch = Batch.from_data_list(processed_graphs)
-
     
     return batch.to(get_device())
 
@@ -377,11 +399,3 @@ def get_memory_usage():
     return 0
 
 # utils.py
-
-def get_global_label_map(graphs):
-    all_labels = set()
-    for g in graphs:
-        for _, data in g.nodes(data=True):
-            all_labels.add(str(data.get('label', '')))
-    unique_node_labels = sorted(list(all_labels))
-    return {label: i for i, label in enumerate(unique_node_labels)}
