@@ -273,13 +273,16 @@ def standardize_graph(graph: nx.Graph, anchor: int = None) -> nx.Graph:
     
     return g
 
-def graph_to_string(graph: nx.Graph, t, max_nodes=10, max_edges=10) -> str:
+# In utils.py
+
+def graph_to_string(graph: nx.Graph, title: str, max_nodes=10, max_edges=10) -> str:
     """
     Converts a NetworkX graph into a detailed string for logging,
     focusing on node and edge attributes.
 
     Args:
         graph: The NetworkX graph to inspect.
+        title: A title for the log section.
         max_nodes: The maximum number of nodes to detail.
         max_edges: The maximum number of edges to detail.
 
@@ -287,20 +290,12 @@ def graph_to_string(graph: nx.Graph, t, max_nodes=10, max_edges=10) -> str:
         A string representation of the graph's structure.
     """
     is_directed = isinstance(graph, nx.DiGraph)
-    if t == "n":
-        info_lines = [
-            f"--- Problematic Graph ---",
-            f"Type: {'Directed' if is_directed else 'Undirected'}",
-            f"Nodes: {graph.number_of_nodes()}, Edges: {graph.number_of_edges()}",
-            f"\n--- Nodes (showing up to {max_nodes}) ---"
-        ]
-    else:
-        info_lines = [
-            f"--- Passing Graph ---",
-            f"Type: {'Directed' if is_directed else 'Undirected'}",
-            f"Nodes: {graph.number_of_nodes()}, Edges: {graph.number_of_edges()}",
-            f"\n--- Nodes (showing up to {max_nodes}) ---"
-        ]
+    info_lines = [
+        f"--- {title} ---",
+        f"Type: {'Directed' if is_directed else 'Undirected'}",
+        f"Nodes: {graph.number_of_nodes()}, Edges: {graph.number_of_edges()}",
+        f"\n--- Nodes (showing up to {max_nodes}) ---"
+    ]
 
     # Detail the nodes and their attributes
     for i, (node_id, attrs) in enumerate(graph.nodes(data=True)):
@@ -312,9 +307,6 @@ def graph_to_string(graph: nx.Graph, t, max_nodes=10, max_edges=10) -> str:
 
     # Detail the edges and their attributes
     for i, (u, v, attrs) in enumerate(graph.edges(data=True)):
-        if i >= max_edges:
-            info_lines.append(f"... and {graph.number_of_edges() - max_edges} more edges.")
-            break
         attr_details = {key: (value, type(value).__name__) for key, value in attrs.items()}
         info_lines.append(f"Edge ({u}, {v}): {attr_details}")
     
@@ -330,28 +322,37 @@ def batch_nx_graphs(graphs, anchors=None):
     processed_graphs = []
     for i, graph in enumerate(graphs):
         anchor = anchors[i] if anchors is not None else None
+        std_graph = None  # Initialize to None to know if standardization failed
+
         try:
-            # Standardize graph attributes
+            # 1. Standardize graph attributes
             std_graph = standardize_graph(graph, anchor)
             
-            # Convert to DeepSnap format
+            # 2. Attempt the potentially failing operation
             ds_graph = DSGraph(std_graph)
             processed_graphs.append(ds_graph)
-            problem_graph_string = graph_to_string(graph, t="p") 
             
-            # 2. Print the detailed information to your log.
-            print(f"\npassed at index {i}.")
-            print(problem_graph_string)
-            
+            # 3. If everything passes, log the full transformation
+            print(f"\n✅✅✅ Graph at index {i} PASSED ✅✅✅")
+            # Log the "BEFORE" state
+            print(graph_to_string(graph, title=f"Graph {i}: ORIGINAL STATE (Before Standardization)"))
+            # Log the "AFTER" state
+            print(graph_to_string(std_graph, title=f"Graph {i}: TRANSFORMED STATE (Sent to DSGraph)"))
+
         except Exception as e:
-            problem_graph_string = graph_to_string(graph, t="n") 
-            
-            # 2. Print the detailed information to your log.
-            print(f"\n[CRITICAL WARNING] Failed to process graph at index {i}. Creating minimal graph as fallback.")
+            # 4. If any part of the try block fails, log everything for debugging
+            print(f"\n❌❌❌ [CRITICAL WARNING] Graph at index {i} FAILED ❌❌❌")
             print(f"Error Message: {str(e)}")
-            print(f"Inspect the graph that caused this error:")
-            print(problem_graph_string)
-            # Create minimal graph with basic features if conversion fails
+            
+            # Log the original graph that caused the error
+            print(graph_to_string(graph, title=f"Graph {i}: ORIGINAL STATE (That Caused The Failure)"))
+            
+            # If standardization ran but DSGraph failed, show the intermediate result.
+            # This is the most important log for debugging.
+            if std_graph is not None:
+                print(graph_to_string(std_graph, title=f"Graph {i}: INTERMEDIATE STATE (This graph was rejected by DSGraph)"))
+            
+            # Create minimal graph as a fallback
             minimal_graph = nx.Graph()
             minimal_graph.add_nodes_from(graph.nodes())
             minimal_graph.add_edges_from(graph.edges())
@@ -361,11 +362,7 @@ def batch_nx_graphs(graphs, anchors=None):
     
     # Create batch
     batch = Batch.from_data_list(processed_graphs)
-    
-    # Suppress the specific warning during augmentation
-    with warnings.catch_warnings():
-        warnings.filterwarnings('ignore', message='Unknown type of key*')
-        batch = augmenter.augment(batch)
+
     
     return batch.to(get_device())
 
