@@ -399,7 +399,7 @@ def main():
     if args.dataset.endswith('.pkl'):
         with open(args.dataset, 'rb') as f:
             data = pickle.load(f)
-            graph = nx.DiGraph()
+            graph = nx.Graph()
             graph.add_nodes_from(data['nodes'])
             graph.add_edges_from(data['edges'])
         dataset = [graph]
