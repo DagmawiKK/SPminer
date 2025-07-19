@@ -235,7 +235,7 @@ def pattern_growth(dataset, task, args):
                         args.max_neighborhood_size))
                 neigh = graph.subgraph(neigh)
                 neigh = nx.convert_node_labels_to_integers(neigh)
-                subgraph.add_edge(0, 0, weight=1.0, type='self_loop')
+                neigh.add_edge(0, 0, weight=1.0, type='self_loop')
                 neighs.append(neigh)
                 if args.node_anchored:
                     anchors.append(0)
