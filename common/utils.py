@@ -27,7 +27,7 @@ def sample_neigh(graphs, size):
         graph = graphs[idx]
         start_node = random.choice(list(graph.nodes))
         neigh = [start_node]
-        frontier = list(set(graph.neighbours(start_node)) - set(neigh))
+        frontier = list(set(graph.neighbors(start_node)) - set(neigh))
         visited = set([start_node])
         while len(neigh) < size and frontier:
             new_node = random.choice(list(frontier))
@@ -35,7 +35,7 @@ def sample_neigh(graphs, size):
             assert new_node not in neigh
             neigh.append(new_node)
             visited.add(new_node)
-            frontier += list(graph.neighbours(new_node))
+            frontier += list(graph.neighbors(new_node))
             frontier = [x for x in frontier if x not in visited]
         if len(neigh) == size:
             return graph, neigh
@@ -62,7 +62,7 @@ def wl_hash(g, dim=64, node_anchored=False):
     for i in range(len(g)):
         newvecs = np.zeros((len(g), dim), dtype=int)
         for n in g.nodes:
-            newvecs[n] = vec_hash(np.sum(vecs[list(g.neighbours(n)) + [n]],
+            newvecs[n] = vec_hash(np.sum(vecs[list(g.neighbors(n)) + [n]],
                 axis=0))
         vecs = newvecs
     return tuple(np.sum(vecs, axis=0))
