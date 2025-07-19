@@ -222,49 +222,47 @@ def build_optimizer(args, params):
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.opt_restart)
     return scheduler, optimizer
 
-def standardize_graph(graph: nx.Graph, anchor: int, node_label_map: dict, edge_type_map: dict) -> nx.Graph:
-    """
-    Standardize graph attributes using a pre-computed vocabulary map.
-    This version now takes node_label_map and edge_type_map as arguments.
-    """
+def standardize_graph(graph: nx.Graph, anchor: int = None, label_map=None) -> nx.Graph:
     g = graph.copy()
-
     # --- 1. Process Node Attributes ---
-    # NO LONGER CALCULATES THE MAP HERE. It's passed in.
-    
+    if label_map is None:
+        all_node_labels = {str(data.get('label', '')) for _, data in g.nodes(data=True)}
+        unique_node_labels = sorted(list(all_node_labels))
+        label_map = {label: i for i, label in enumerate(unique_node_labels)}
+    unique_node_labels = list(label_map.keys())
+
     for node in g.nodes():
         node_data = g.nodes[node]
         anchor_feature = [1.0] if (anchor is not None and node == anchor) else [0.0]
-        
-        # Use the passed-in map to determine feature vector length
-        label_feature = [0.0] * len(node_label_map)
+        label_feature = [0.0] * len(unique_node_labels)
         node_label = str(node_data.get('label', ''))
-        if node_label in node_label_map:
-            label_feature[node_label_map[node_label]] = 1.0
-
+        if node_label in label_map:
+            label_feature[label_map[node_label]] = 1.0
         final_node_feature = torch.tensor(anchor_feature + label_feature, dtype=torch.float)
-
         for key in list(node_data.keys()):
             del node_data[key]
         node_data['node_feature'] = final_node_feature
 
     # --- 2. Process Edge Attributes ---
-    # NO LONGER CALCULATES THE MAP HERE.
-    
+    all_edge_types = {str(data.get('type', '')) for _, _, data in g.edges(data=True)}
+    unique_edge_types = sorted(list(all_edge_types))
+    type_map = {etype: i for i, etype in enumerate(unique_edge_types)}
+
     for u, v in g.edges():
         edge_data = g.edges[u, v]
         weight_feature = [float(edge_data.get('weight', 1.0))]
-        
-        # Use the passed-in map
-        type_feature = [0.0] * len(edge_type_map)
+        type_feature = [0.0] * len(unique_edge_types)
         edge_type_str = str(edge_data.get('type', ''))
-        if edge_type_str in edge_type_map:
-            type_feature[edge_type_map[edge_type_str]] = 1.0
+        if edge_type_str in type_map:
+            type_feature[type_map[edge_type_str]] = 1.0
         
         final_edge_feature = torch.tensor(weight_feature + type_feature, dtype=torch.float)
 
+        # --- Aggressive Cleanup: Remove ALL original keys from the edge ---
         for key in list(edge_data.keys()):
             del edge_data[key]
+        
+        # Add the single, standardized feature vector back
         edge_data['edge_feature'] = final_edge_feature
 
     return g
@@ -313,49 +311,53 @@ def graph_to_string(graph: nx.Graph, title: str, max_nodes=10, max_edges=10) -> 
 def batch_nx_graphs(graphs, anchors=None):
     # Initialize feature augmenter
     augmenter = feature_preprocess.FeatureAugment()
-
-    # --- NEW: PRE-COMPUTE GLOBAL VOCABULARY FOR THE BATCH ---
-    all_node_labels = set()
-    all_edge_types = set()
-    for g in graphs:
-        for _, data in g.nodes(data=True):
-            all_node_labels.add(str(data.get('label', '')))
-        for _, _, data in g.edges(data=True):
-            all_edge_types.add(str(data.get('type', '')))
     
-    # Create stable, sorted maps
-    node_label_map = {label: i for i, label in enumerate(sorted(list(all_node_labels)))}
-    edge_type_map = {etype: i for i, etype in enumerate(sorted(list(all_edge_types)))}
-    # --- END OF NEW PART ---
-
+    # Process graphs with proper attribute handling
     processed_graphs = []
+    global_label_map = get_global_label_map(graphs)
     for i, graph in enumerate(graphs):
         anchor = anchors[i] if anchors is not None else None
+        std_graph = None
+
         try:
-            # Pass the global maps to the standardization function
-            std_graph = standardize_graph(graph, anchor, node_label_map, edge_type_map)
+            # 1. Standardize graph attributes
+            std_graph = standardize_graph(graph, anchor, label_map=global_label_map)
             
+            # 2. Attempt the potentially failing operation
             ds_graph = DSGraph(std_graph)
             processed_graphs.append(ds_graph)
+            
+            # 3. If everything passes, log the full transformation
+            print(f"\n✅✅✅ Graph at index {i} PASSED ✅✅✅")
+            # Log the "BEFORE" state
+            print(graph_to_string(graph, title=f"Graph {i}: ORIGINAL STATE (Before Standardization)"))
+            # Log the "AFTER" state
+            print(graph_to_string(std_graph, title=f"Graph {i}: TRANSFORMED STATE (Sent to DSGraph)"))
 
         except Exception as e:
-            # (Error logging remains the same)
-            print(f"\n[CRITICAL WARNING] Failed to process graph at index {i} during standardization. Error: {e}")
-            # ... (minimal graph fallback) ...
+            # 4. If any part of the try block fails, log everything for debugging
+            print(f"\n❌❌❌ [CRITICAL WARNING] Graph at index {i} FAILED ❌❌❌")
+            print(f"Error Message: {str(e)}")
+            
+            # Log the original graph that caused the error
+            print(graph_to_string(graph, title=f"Graph {i}: ORIGINAL STATE (That Caused The Failure)"))
+            
+            # If standardization ran but DSGraph failed, show the intermediate result.
+            # This is the most important log for debugging.
+            if std_graph is not None:
+                print(graph_to_string(std_graph, title=f"Graph {i}: INTERMEDIATE STATE (This graph was rejected by DSGraph)"))
+            
+            # Create minimal graph as a fallback
             minimal_graph = nx.Graph()
             minimal_graph.add_nodes_from(graph.nodes())
             minimal_graph.add_edges_from(graph.edges())
             for node in minimal_graph.nodes():
                 minimal_graph.nodes[node]['node_feature'] = torch.tensor([1.0])
-            # This part will likely fail now too, but the root error is in standardization
             processed_graphs.append(DSGraph(minimal_graph))
-            
-    # The rest of the function can now proceed
-    batch = Batch.from_data_list(processed_graphs) # This will no longer fail
     
-    with warnings.catch_warnings():
-        warnings.filterwarnings('ignore', message='Unknown type of key*')
-        batch = augmenter.augment(batch)
+    # Create batch
+    batch = Batch.from_data_list(processed_graphs)
+
     
     return batch.to(get_device())
 
@@ -373,3 +375,13 @@ def get_memory_usage():
     if torch.cuda.is_available():
         return torch.cuda.memory_allocated() / 1024**2 
     return 0
+
+# utils.py
+
+def get_global_label_map(graphs):
+    all_labels = set()
+    for g in graphs:
+        for _, data in g.nodes(data=True):
+            all_labels.add(str(data.get('label', '')))
+    unique_node_labels = sorted(list(all_labels))
+    return {label: i for i, label in enumerate(unique_node_labels)}
