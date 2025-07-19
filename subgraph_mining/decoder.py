@@ -156,17 +156,6 @@ def pattern_growth_streaming(dataset, task, args):
 
 def pattern_growth(dataset, task, args):
     start_time = time.time()
-    if args.method_type == "end2end":
-        model = models.End2EndOrder(1, args.hidden_dim, args)
-    elif args.method_type == "mlp":
-        model = models.BaselineMLP(1, args.hidden_dim, args)
-    else:
-        model = models.OrderEmbedder(1, args.hidden_dim, args)
-    model.to(utils.get_device())
-    model.eval()
-    model.load_state_dict(torch.load(args.model_path,
-        map_location=utils.get_device()))
-
     if task == "graph-labeled":
         dataset, labels = dataset
 
@@ -240,6 +229,30 @@ def pattern_growth(dataset, task, args):
                 if args.node_anchored:
                     anchors.append(0)
 
+    ### STEP 1: CREATE THE GLOBAL VOCABULARY FROM ALL SAMPLED GRAPHS ###
+    print("Building global vocabulary from all neighborhood graphs...")
+    # Use your helper functions from utils.py
+    global_node_label_map = utils.get_global_label_map(neighs)
+    global_edge_type_map = utils.get_global_edge_type_map(neighs)
+    print("Global vocabulary built.")
+
+    ### STEP 2: CALCULATE THE DYNAMIC INPUT DIMENSION FOR THE MODEL ###
+    # The feature length is 1 (for the anchor) + the number of unique labels
+    input_dim = 1 + len(global_node_label_map)
+    print(f"Determined dynamic GNN input dimension: {input_dim}")
+
+    ### STEP 3: INITIALIZE THE MODEL WITH THE CORRECT, DYNAMIC DIMENSION ###
+    if args.method_type == "end2end":
+        model = models.End2EndOrder(input_dim, args.hidden_dim, args)
+    elif args.method_type == "mlp":
+        model = models.BaselineMLP(input_dim, args.hidden_dim, args)
+    else:
+        model = models.OrderEmbedder(input_dim, args.hidden_dim, args)
+    
+    model.to(utils.get_device())
+    model.eval()
+    model.load_state_dict(torch.load(args.model_path, map_location=utils.get_device()))
+
     embs = []
     if len(neighs) % args.batch_size != 0:
         print("WARNING: number of graphs not multiple of batch size")
@@ -247,7 +260,7 @@ def pattern_growth(dataset, task, args):
         top = (i+1)*args.batch_size
         with torch.no_grad():
             batch = utils.batch_nx_graphs(neighs[i*args.batch_size:top],
-                anchors=anchors if args.node_anchored else None)
+                anchors=anchors if args.node_anchored else None, node_label_map=global_node_label_map, edge_type_map=global_edge_type_map)
             emb = model.emb_model(batch)
             emb = emb.to(torch.device("cpu"))
         embs.append(emb)
@@ -258,6 +271,7 @@ def pattern_growth(dataset, task, args):
 
     if not hasattr(args, 'n_workers'):
         args.n_workers = mp.cpu_count()
+    
 
     if args.search_strategy == "mcts":
         assert args.method_type == "order"
@@ -281,6 +295,8 @@ def pattern_growth(dataset, task, args):
                 analyze=args.analyze, model_type=args.method_type,
                 out_batch_size=args.out_batch_size, n_beams=1,
                 n_workers=args.n_workers)
+            
+        agent.set_vocab(global_node_label_map, global_edge_type_map)
         agent.args = args
     elif args.search_strategy == "beam":
         agent = BeamSearchAgent(args.min_pattern_size, args.max_pattern_size,

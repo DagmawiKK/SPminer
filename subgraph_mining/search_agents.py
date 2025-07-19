@@ -264,18 +264,22 @@ worker_model = None
 worker_graphs = None
 worker_embs = None
 worker_args = None
+worker_node_label_map = None
+worker_edge_type_map = None
 
-def init_greedy_worker(model, graphs, embs, args):
+def init_greedy_worker(model, graphs, embs, args, node_label_map, edge_type_map):
     """
     Initializer function for each worker process in the pool.
     This runs ONCE per worker and loads the large data into its global scope.
     """
-    global worker_model, worker_graphs, worker_embs, worker_args
+    global worker_model, worker_graphs, worker_embs, worker_args, worker_node_label_map, worker_edge_type_map
     print(f"[{time.strftime('%H:%M:%S')}] Worker PID {os.getpid()} initializing...", flush=True)
     worker_model = model
     worker_graphs = graphs
     worker_embs = embs
     worker_args = args
+    worker_node_label_map = node_label_map 
+    worker_edge_type_map = edge_type_map
     print(f"[{time.strftime('%H:%M:%S')}] Worker PID {os.getpid()} initialization complete.", flush=True)
 
 
@@ -284,7 +288,7 @@ def run_greedy_trial(trial_idx):
     Executes a single greedy search trial.
     It now accesses the large data from global variables, avoiding data transfer.
     """
-    global worker_model, worker_graphs, worker_embs, worker_args
+    global worker_model, worker_graphs, worker_embs, worker_args, worker_node_label_map, worker_edge_type_map
     
     random.seed(int.from_bytes(os.urandom(4), 'little') + trial_idx)
     np.random.seed(int.from_bytes(os.urandom(4), 'little') + trial_idx)
@@ -317,7 +321,7 @@ def run_greedy_trial(trial_idx):
 
         with torch.no_grad():
             cand_embs = worker_model.emb_model(utils.batch_nx_graphs(
-                cand_neighs, anchors=anchors if worker_args.node_anchored else None))
+                cand_neighs, anchors=anchors if worker_args.node_anchored else None, node_label_map=worker_node_label_map, edge_type_map=worker_edge_type_map))
 
         best_score = float("inf")
         best_node = None
@@ -370,6 +374,10 @@ class GreedySearchAgent(SearchAgent):
         print("Rank Method:", rank_method)
         if self.n_workers > 1:
             print(f"Using {self.n_workers} worker processes for parallel search.")
+    def set_vocab(self, node_label_map, edge_type_map):
+        self.node_label_map = node_label_map
+        self.edge_type_map = edge_type_map
+
 
     def run_search(self, n_trials=1000):
         """
@@ -379,7 +387,7 @@ class GreedySearchAgent(SearchAgent):
         self.counts = defaultdict(lambda: defaultdict(list))
         self.n_trials = n_trials
 
-        init_args = (self.model, self.dataset, self.embs, self.args)
+        init_args = (self.model, self.dataset, self.embs, self.args, self.node_label_map, self.edge_type_map)
         
         args_for_pool = range(n_trials)
 

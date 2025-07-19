@@ -328,67 +328,51 @@ def get_global_label_map(graphs):
     unique_node_labels = sorted(list(all_labels))
     return {label: i for i, label in enumerate(unique_node_labels)}
 
-def batch_nx_graphs(graphs, anchors=None):
-    # Initialize feature augmenter
-    augmenter = feature_preprocess.FeatureAugment()
-    
-    # Process graphs with proper attribute handling
+def batch_nx_graphs(graphs, anchors, node_label_map, edge_type_map):
+    """
+    This version now REQUIRES the global vocabulary maps to be passed in,
+    ensuring consistent feature dimensions across all batches.
+    """
     processed_graphs = []
-    global_label_map = get_global_label_map(graphs)
-    global_edge_type_map = get_global_edge_type_map(graphs)
+    
+    # REMOVED: This function no longer creates its own vocabulary.
+    # It receives the one, true, global vocabulary as parameters.
     
     for i, graph in enumerate(graphs):
         anchor = anchors[i] if anchors is not None else None
-        std_graph = None
-
         try:
-            # 1. Standardize graph attributes with global maps
-            std_graph = standardize_graph(graph, anchor, label_map=global_label_map, edge_type_map=global_edge_type_map)
-            
-            # 2. Attempt the potentially failing operation
+            # Pass the provided global maps to the standardization function
+            std_graph = standardize_graph(graph, anchor, label_map=node_label_map, edge_type_map=edge_type_map)
             ds_graph = DSGraph(std_graph)
             processed_graphs.append(ds_graph)
-            
-            # 3. If everything passes, log the full transformation
-            print(f"\n✅✅✅ Graph at index {i} PASSED ✅✅✅")
-            # Log the "BEFORE" state
-            print(graph_to_string(graph, title=f"Graph {i}: ORIGINAL STATE (Before Standardization)"))
-            # Log the "AFTER" state
-            print(graph_to_string(std_graph, title=f"Graph {i}: TRANSFORMED STATE (Sent to DSGraph)"))
 
         except Exception as e:
-            # 4. If any part of the try block fails, log everything for debugging
+            # Fallback needs to create features of the correct global dimension
             print(f"\n❌❌❌ [CRITICAL WARNING] Graph at index {i} FAILED ❌❌❌")
             print(f"Error Message: {str(e)}")
-            
-            # Log the original graph that caused the error
-            print(graph_to_string(graph, title=f"Graph {i}: ORIGINAL STATE (That Caused The Failure)"))
-            
-            # If standardization ran but DSGraph failed, show the intermediate result.
-            # This is the most important log for debugging.
-            if std_graph is not None:
-                print(graph_to_string(std_graph, title=f"Graph {i}: INTERMEDIATE STATE (This graph was rejected by DSGraph)"))
-            
-            # Create minimal graph as a fallback with consistent dimensions
             minimal_graph = nx.Graph()
             minimal_graph.add_nodes_from(graph.nodes())
             minimal_graph.add_edges_from(graph.edges())
             
-            # Use the same global maps for consistency
+            # Use the passed-in global maps for consistency in the fallback
+            num_node_features = 1 + len(node_label_map)
+            num_edge_features = 1 + len(edge_type_map)
+
             for node in minimal_graph.nodes():
-                anchor_feature = [1.0] if (anchor is not None and node == anchor) else [0.0]
-                label_feature = [0.0] * len(global_label_map)
-                minimal_graph.nodes[node]['node_feature'] = torch.tensor(anchor_feature + label_feature, dtype=torch.float)
-            
-            for u, v in minimal_graph.edges():
-                weight_feature = [1.0]
-                type_feature = [0.0] * len(global_edge_type_map)
-                minimal_graph.edges[u, v]['edge_feature'] = torch.tensor(weight_feature + type_feature, dtype=torch.float)
-                
+                minimal_graph.nodes[node]['node_feature'] = torch.zeros(num_node_features)
+            for u,v in minimal_graph.edges():
+                minimal_graph.edges[u,v]['edge_feature'] = torch.zeros(num_edge_features)
+
             processed_graphs.append(DSGraph(minimal_graph))
-    
-    # Create batch
+
+    # This will no longer fail with a tensor size error because all graphs
+    # were processed with the same vocabulary maps.
     batch = Batch.from_data_list(processed_graphs)
+    
+    # The augmenter has been a source of issues, let's keep it disabled for now
+    # to ensure the core logic works. You can re-enable it later if needed.
+    # augmenter = feature_preprocess.FeatureAugment()
+    # batch = augmenter.augment(batch)
     
     return batch.to(get_device())
 
