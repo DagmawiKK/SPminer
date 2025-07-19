@@ -318,6 +318,15 @@ def get_global_edge_type_map(graphs):
             all_edge_types.add(str(data.get('type', '')))
     unique_edge_types = sorted(list(all_edge_types))
     return {etype: i for i, etype in enumerate(unique_edge_types)}
+# utils.py
+
+def get_global_label_map(graphs):
+    all_labels = set()
+    for g in graphs:
+        for _, data in g.nodes(data=True):
+            all_labels.add(str(data.get('label', '')))
+    unique_node_labels = sorted(list(all_labels))
+    return {label: i for i, label in enumerate(unique_node_labels)}
 
 def batch_nx_graphs(graphs, anchors=None):
     # Initialize feature augmenter
