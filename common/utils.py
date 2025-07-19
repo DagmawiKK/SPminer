@@ -304,9 +304,6 @@ def graph_to_string(graph: nx.Graph, t, max_nodes=10, max_edges=10) -> str:
 
     # Detail the nodes and their attributes
     for i, (node_id, attrs) in enumerate(graph.nodes(data=True)):
-        if i >= max_nodes:
-            info_lines.append(f"... and {graph.number_of_nodes() - max_nodes} more nodes.")
-            break
         # Also show the type of each attribute value, which is crucial for debugging
         attr_details = {key: (value, type(value).__name__) for key, value in attrs.items()}
         info_lines.append(f"Node {node_id}: {attr_details}")
