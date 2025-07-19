@@ -347,13 +347,13 @@ def batch_nx_graphs(graphs, anchors=None):
             print(problem_graph_string)
             
         except Exception as e:
-            problem_graph_string = graph_to_string(graph) 
+            problem_graph_string = graph_to_string(graph, "n") 
             
             # 2. Print the detailed information to your log.
             print(f"\n[CRITICAL WARNING] Failed to process graph at index {i}. Creating minimal graph as fallback.")
             print(f"Error Message: {str(e)}")
             print(f"Inspect the graph that caused this error:")
-            print(problem_graph_string, "n")
+            print(problem_graph_string)
             # Create minimal graph with basic features if conversion fails
             minimal_graph = nx.Graph()
             minimal_graph.add_nodes_from(graph.nodes())
