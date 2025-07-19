@@ -273,7 +273,7 @@ def standardize_graph(graph: nx.Graph, anchor: int = None) -> nx.Graph:
     
     return g
 
-def graph_to_string(graph: nx.Graph, max_nodes=10, max_edges=10) -> str:
+def graph_to_string(graph: nx.Graph, t, max_nodes=10, max_edges=10) -> str:
     """
     Converts a NetworkX graph into a detailed string for logging,
     focusing on node and edge attributes.
@@ -287,12 +287,20 @@ def graph_to_string(graph: nx.Graph, max_nodes=10, max_edges=10) -> str:
         A string representation of the graph's structure.
     """
     is_directed = isinstance(graph, nx.DiGraph)
-    info_lines = [
-        f"--- Problematic Graph ---",
-        f"Type: {'Directed' if is_directed else 'Undirected'}",
-        f"Nodes: {graph.number_of_nodes()}, Edges: {graph.number_of_edges()}",
-        f"\n--- Nodes (showing up to {max_nodes}) ---"
-    ]
+    if t == "n":
+        info_lines = [
+            f"--- Problematic Graph ---",
+            f"Type: {'Directed' if is_directed else 'Undirected'}",
+            f"Nodes: {graph.number_of_nodes()}, Edges: {graph.number_of_edges()}",
+            f"\n--- Nodes (showing up to {max_nodes}) ---"
+        ]
+    else:
+        info_lines = [
+            f"--- Passing Graph ---",
+            f"Type: {'Directed' if is_directed else 'Undirected'}",
+            f"Nodes: {graph.number_of_nodes()}, Edges: {graph.number_of_edges()}",
+            f"\n--- Nodes (showing up to {max_nodes}) ---"
+        ]
 
     # Detail the nodes and their attributes
     for i, (node_id, attrs) in enumerate(graph.nodes(data=True)):
@@ -332,7 +340,7 @@ def batch_nx_graphs(graphs, anchors=None):
             # Convert to DeepSnap format
             ds_graph = DSGraph(std_graph)
             processed_graphs.append(ds_graph)
-            problem_graph_string = graph_to_string(std_graph) 
+            problem_graph_string = graph_to_string(graph, "p") 
             
             # 2. Print the detailed information to your log.
             print(f"\npassed at index {i}.")
@@ -345,7 +353,7 @@ def batch_nx_graphs(graphs, anchors=None):
             print(f"\n[CRITICAL WARNING] Failed to process graph at index {i}. Creating minimal graph as fallback.")
             print(f"Error Message: {str(e)}")
             print(f"Inspect the graph that caused this error:")
-            print(problem_graph_string)
+            print(problem_graph_string, "n")
             # Create minimal graph with basic features if conversion fails
             minimal_graph = nx.Graph()
             minimal_graph.add_nodes_from(graph.nodes())
